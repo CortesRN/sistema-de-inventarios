@@ -178,46 +178,111 @@ function Checkout({cart,zone,onBack,onConfirm}){
 function Store({onOrder}){
   const[products,setProducts]=useState([]);
   const[loading,setLoading]=useState(true);
-  const[cat,setCat]=useState("Todo");
   const[search,setSearch]=useState("");
   const[selected,setSelected]=useState(null);
   const[cart,setCart]=useState(()=>{try{const s=localStorage.getItem("casi:cart");return s?JSON.parse(s):[];}catch{return[];}});
   const[zone,setZone]=useState(()=>{try{const s=localStorage.getItem("casi:zone");return s?JSON.parse(s):null;}catch{return null;}});
   const[screen,setScreen]=useState("catalog");
   const[cartOpen,setCartOpen]=useState(false);
-  useEffect(()=>{dbWhere(COL.inventory,"active","==",true).then(items=>{setProducts(items);setLoading(false);});},[]);
+  const[filtersOpen,setFiltersOpen]=useState(false);
+
+  // ── Filtros activos
+  const[fCat,setFCat]=useState([]);
+  const[fGender,setFGender]=useState([]);
+  const[fPriceMax,setFPriceMax]=useState(null);
+  const[sortBy,setSortBy]=useState("default");
+
+  /*useEffect(()=>{
+    dbWhere(COL.inventory,"active","==",true).then(items=>{
+      setProducts(items);
+      setLoading(false);
+    });
+  },[]);*/
+  // NUEVA VERSIÓN — filtra en el navegador, sin índice:
+  useEffect(()=>{
+    dbGetAll(COL.inventory,"createdAt","desc").then(items=>{
+      setProducts(items.filter(p=>p.active===true));
+      setLoading(false);
+    }).catch(err=>{
+      console.error("Error cargando inventario:",err);
+      setLoading(false);
+    });
+  },[]);
   useEffect(()=>{try{localStorage.setItem("casi:cart",JSON.stringify(cart));}catch{}},[cart]);
   useEffect(()=>{try{if(zone)localStorage.setItem("casi:zone",JSON.stringify(zone));}catch{}},[zone]);
-  const CATS=["Todo",...new Set(products.map(p=>p.cat).filter(Boolean).sort())];
-  const vis=products.filter(p=>(cat==="Todo"||p.cat===cat)&&(!search||p.name?.toLowerCase().includes(search.toLowerCase())));
+
+  // ── Opciones de filtro derivadas del inventario real
+  const CATS=[...new Set(products.map(p=>p.cat).filter(Boolean).sort())];
+  const GENDERS=[...new Set(products.map(p=>p.gender).filter(Boolean).sort())];
+  const prices=products.map(p=>p.salePrice).filter(p=>typeof p==="number"&&p>0);
+  const maxPrice=prices.length?Math.ceil(prices.reduce((a,b)=>a>b?a:b,0)/200)*200:1000;
+  const PRICE_OPTS=[200,400,600,800,1000].filter(p=>p<=maxPrice+200);
+
+  const activeFilters=fCat.length+fGender.length+(fPriceMax?1:0);
+
+  // ── Aplicar filtros y ordenamiento
+  let vis=products.filter(p=>{
+    if(search&&!p.name?.toLowerCase().includes(search.toLowerCase()))return false;
+    if(fCat.length&&!fCat.includes(p.cat))return false;
+    if(fGender.length&&!fGender.includes(p.gender))return false;
+    if(fPriceMax&&p.salePrice>fPriceMax)return false;
+    return true;
+  });
+  if(sortBy==="price_asc")vis=[...vis].sort((a,b)=>a.salePrice-b.salePrice);
+  if(sortBy==="price_desc")vis=[...vis].sort((a,b)=>b.salePrice-a.salePrice);
+  if(sortBy==="newest")vis=[...vis].sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt));
+
   const cartSub=cart.reduce((a,i)=>a+(i.price||0),0);
   function addToCart(item){setCart(c=>[...c,item]);}
   function removeFromCart(i){setCart(c=>c.filter((_,idx)=>idx!==i));}
   async function handleOrder(order){await onOrder(order);setCart([]);setSelected(null);setScreen("catalog");}
+  function toggle(arr,set,val){set(prev=>prev.includes(val)?prev.filter(x=>x!==val):[...prev,val]);}
+  function clearFilters(){setFCat([]);setFGender([]);setFPriceMax(null);setSortBy("default");}
+
   if(screen==="locator")return<LocationPicker onBack={()=>setScreen("catalog")} onDone={z=>{setZone(z);setScreen("catalog");}}/>;
   if(screen==="checkout")return<Checkout cart={cart} zone={zone} onBack={()=>setScreen("catalog")} onConfirm={handleOrder}/>;
+
+  // ── Detalle de producto
   if(selected)return(
     <div style={{background:C.cream,minHeight:"100%",paddingBottom:100}}>
       <TopBar title="CASI" onBack={()=>setSelected(null)}/>
-      <div style={{width:"100%",height:320,position:"relative",background:C.stone,overflow:"hidden"}}>
-        {selected.img?<img src={optimImg(selected.img)} alt={selected.name} style={{width:"100%",height:"100%",objectFit:"cover"}}/>:<div style={{width:"100%",height:"100%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:64,color:C.muted,opacity:.3}}>📷</div>}
+      <div style={{width:"100%",height:340,position:"relative",background:C.stone,overflow:"hidden"}}>
+        {selected.img
+          ?<img src={optimImg(selected.img)} alt={selected.name} style={{width:"100%",height:"100%",objectFit:"cover"}}/>
+          :<div style={{width:"100%",height:"100%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:64,color:C.muted,opacity:.3}}>📷</div>
+        }
       </div>
       <div style={{padding:"20px 18px 0"}}>
         <div style={{fontSize:10,color:C.muted,letterSpacing:2,textTransform:"uppercase",marginBottom:4}}>CASI · {selected.sku}</div>
         <div style={{fontSize:24,fontWeight:900,color:C.black,lineHeight:1.2,marginBottom:10,fontFamily:FONT.display}}>{selected.name}</div>
-        <div style={{fontSize:28,fontWeight:900,color:C.sale,marginBottom:6}}>{mxn(selected.salePrice)}<span style={{fontSize:13,color:C.muted,fontWeight:400}}> MXN</span></div>
-        {(selected.talla||selected.color)&&<Card style={{marginBottom:14,background:C.stone,padding:"10px 14px"}}><div style={{fontSize:13,color:C.black}}>{selected.cat}{selected.talla?` · Talla: ${selected.talla}`:""}{selected.color?` · ${selected.color}`:""}</div></Card>}
-        {selected.descr&&<Card style={{marginBottom:16,padding:"12px 14px"}}><div style={{fontSize:13,color:C.black,lineHeight:1.7}}>{selected.descr}</div></Card>}
-        {zone?<InfoBox type="ok">🛵 Envío a {zone.name}: <strong>${zone.price} MXN</strong> · {zone.time} · 📅 {zone.days}</InfoBox>:<InfoBox type="warn">📍 Selecciona tu zona para ver el envío</InfoBox>}
+        <div style={{fontSize:28,fontWeight:900,color:C.sale,marginBottom:12}}>{mxn(selected.salePrice)}<span style={{fontSize:13,color:C.muted,fontWeight:400}}> MXN</span></div>
+        {/* Badges de atributos */}
+        <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:16}}>
+          {selected.cat&&<span style={{padding:"5px 12px",background:C.stone,fontSize:11,fontWeight:700,color:C.black,letterSpacing:.5}}>{selected.cat}</span>}
+          {selected.gender&&<span style={{padding:"5px 12px",background:C.stone,fontSize:11,fontWeight:600,color:C.muted}}>{selected.gender}</span>}
+          {selected.talla&&<span style={{padding:"5px 12px",background:C.terraL,fontSize:11,fontWeight:900,color:C.terra,letterSpacing:.5}}>Talla {selected.talla}</span>}
+          {selected.color&&<span style={{padding:"5px 12px",background:C.stone,fontSize:11,color:C.muted}}>{selected.color}</span>}
+        </div>
+        {selected.descr&&<Card style={{marginBottom:16,padding:"14px 16px"}}><div style={{fontSize:13,color:C.black,lineHeight:1.8}}>{selected.descr}</div></Card>}
+        {zone
+          ?<InfoBox type="ok">🛵 Envío a {zone.name}: <strong>${zone.price} MXN</strong> · {zone.time} · 📅 {zone.days}</InfoBox>
+          :<InfoBox type="warn">📍 Selecciona tu zona para ver el costo de envío</InfoBox>
+        }
       </div>
       <div style={{position:"fixed",bottom:0,left:"50%",transform:"translateX(-50%)",width:"100%",maxWidth:390,padding:"12px 16px",boxSizing:"border-box",background:"rgba(248,244,239,0.97)",backdropFilter:"blur(8px)",borderTop:`1px solid ${C.border}`,zIndex:50}}>
-        <button onClick={()=>{addToCart({...selected,price:selected.salePrice});setSelected(null);}} style={{width:"100%",padding:"15px",fontSize:13,fontWeight:900,letterSpacing:2,textTransform:"uppercase",background:C.black,color:C.white,border:"none",cursor:"pointer"}}>AGREGAR AL CARRITO</button>
+        <button onClick={()=>{addToCart({...selected,price:selected.salePrice});setSelected(null);}} style={{width:"100%",padding:"16px",fontSize:13,fontWeight:900,letterSpacing:2,textTransform:"uppercase",background:C.black,color:C.white,border:"none",cursor:"pointer"}}>
+          + AGREGAR AL CARRITO
+        </button>
       </div>
     </div>
   );
+
   if(loading)return<Loading message="Cargando productos…"/>;
+
   return(
     <div style={{background:C.cream,minHeight:"100%",paddingBottom:8}}>
+
+      {/* ══ CARRITO DRAWER ══════════════════════════════════ */}
       {cartOpen&&(
         <div style={{position:"fixed",inset:0,zIndex:500}}>
           <div onClick={()=>setCartOpen(false)} style={{position:"absolute",inset:0,background:"rgba(0,0,0,0.6)"}}/>
@@ -227,84 +292,260 @@ function Store({onOrder}){
               <button onClick={()=>setCartOpen(false)} style={{background:C.black,border:"none",width:32,height:32,cursor:"pointer",color:C.white,fontSize:16,display:"flex",alignItems:"center",justifyContent:"center"}}>✕</button>
             </div>
             <div style={{padding:"0 20px"}}>
-              {cart.length===0?<div style={{textAlign:"center",padding:"40px"}}><div style={{fontSize:48,marginBottom:12}}>🛒</div><div style={{fontSize:16,fontWeight:700,fontFamily:FONT.display}}>Carrito vacío</div></div>:<>
-                {cart.map((item,i)=>(
-                  <div key={i} style={{display:"flex",gap:14,paddingBottom:16,marginBottom:16,borderBottom:`1px solid ${C.stone}`}}>
-                    <div style={{width:70,height:88,overflow:"hidden",flexShrink:0,position:"relative",background:C.stone}}><FadeImg src={item.img} alt={item.name}/></div>
-                    <div style={{flex:1}}>
-                      <div style={{fontSize:13,fontWeight:800,color:C.black,lineHeight:1.3,marginBottom:4,fontFamily:FONT.display}}>{item.name}</div>
-                      <div style={{fontSize:11,color:C.muted,marginBottom:4}}>{item.talla&&"T:"+item.talla}{item.talla&&item.color&&" · "}{item.color}</div>
-                      <div style={{fontSize:17,fontWeight:900,color:C.sale}}>{mxn(item.price)}</div>
+              {cart.length===0
+                ?<div style={{textAlign:"center",padding:"40px"}}><div style={{fontSize:48,marginBottom:12}}>🛒</div><div style={{fontSize:16,fontWeight:700,fontFamily:FONT.display}}>Carrito vacío</div></div>
+                :<>
+                  {cart.map((item,i)=>(
+                    <div key={i} style={{display:"flex",gap:14,paddingBottom:16,marginBottom:16,borderBottom:`1px solid ${C.stone}`}}>
+                      <div style={{width:70,height:88,overflow:"hidden",flexShrink:0,position:"relative",background:C.stone}}><FadeImg src={item.img} alt={item.name}/></div>
+                      <div style={{flex:1}}>
+                        <div style={{fontSize:13,fontWeight:800,color:C.black,lineHeight:1.3,marginBottom:4,fontFamily:FONT.display}}>{item.name}</div>
+                        <div style={{fontSize:11,color:C.muted,marginBottom:4}}>{item.talla&&"T:"+item.talla}{item.talla&&item.color&&" · "}{item.color}</div>
+                        <div style={{fontSize:17,fontWeight:900,color:C.sale}}>{mxn(item.price)}</div>
+                      </div>
+                      <button onClick={()=>removeFromCart(i)} style={{background:"none",border:"none",cursor:"pointer",color:C.muted,fontSize:18,alignSelf:"flex-start",padding:4}}>✕</button>
                     </div>
-                    <button onClick={()=>removeFromCart(i)} style={{background:"none",border:"none",cursor:"pointer",color:C.muted,fontSize:18,alignSelf:"flex-start",padding:4}}>✕</button>
-                  </div>
-                ))}
-                {zone?<div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"12px 0",borderBottom:`1px solid ${C.stone}`,marginBottom:16}}>
-                  <div><div style={{fontSize:13,fontWeight:700,color:C.black}}>📍 {zone.name}</div><div style={{fontSize:11,color:C.muted}}>{zone.time} · {zone.days}</div></div>
-                  <div style={{textAlign:"right"}}><div style={{fontSize:15,fontWeight:900,color:C.terra}}>+${zone.price}</div><button onClick={()=>{setCartOpen(false);setScreen("locator");}} style={{fontSize:10,color:C.info,background:"none",border:"none",cursor:"pointer"}}>Cambiar</button></div>
-                </div>:<button onClick={()=>{setCartOpen(false);setScreen("locator");}} style={{width:"100%",padding:"13px",background:C.warnFade,border:`1.5px solid ${C.warn}`,fontSize:12,color:C.warn,fontWeight:700,cursor:"pointer",marginBottom:16,letterSpacing:1,textTransform:"uppercase"}}>📍 Selecciona zona de entrega</button>}
-                <Card style={{padding:"16px",marginBottom:16}}>
-                  {[["Subtotal",mxn(cartSub)],["Envío",zone?`$${zone.price}`:"Pendiente"]].map(([l,v])=>(
-                    <div key={l} style={{display:"flex",justifyContent:"space-between",marginBottom:8}}><span style={{fontSize:13,color:C.muted}}>{l}</span><span style={{fontSize:13}}>{v}</span></div>
                   ))}
-                  <div style={{display:"flex",justifyContent:"space-between",paddingTop:10,borderTop:`1px solid ${C.border}`}}><span style={{fontSize:14,fontWeight:800,letterSpacing:1,textTransform:"uppercase"}}>Total</span><span style={{fontSize:22,fontWeight:900,color:C.sale}}>{mxn(cartSub+(zone?.price||0))} MXN</span></div>
-                </Card>
-                <Btn label={zone?"Ir a pagar →":"Elige zona primero"} onClick={()=>{setCartOpen(false);if(zone)setScreen("checkout");else setScreen("locator");}} disabled={!zone}/>
-              </>}
+                  {zone
+                    ?<div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"12px 0",borderBottom:`1px solid ${C.stone}`,marginBottom:16}}>
+                      <div><div style={{fontSize:13,fontWeight:700,color:C.black}}>📍 {zone.name}</div><div style={{fontSize:11,color:C.muted}}>{zone.time} · {zone.days}</div></div>
+                      <div style={{textAlign:"right"}}><div style={{fontSize:15,fontWeight:900,color:C.terra}}>+${zone.price}</div><button onClick={()=>{setCartOpen(false);setScreen("locator");}} style={{fontSize:10,color:C.info,background:"none",border:"none",cursor:"pointer"}}>Cambiar</button></div>
+                    </div>
+                    :<button onClick={()=>{setCartOpen(false);setScreen("locator");}} style={{width:"100%",padding:"13px",background:C.warnFade,border:`1.5px solid ${C.warn}`,fontSize:12,color:C.warn,fontWeight:700,cursor:"pointer",marginBottom:16,letterSpacing:1,textTransform:"uppercase"}}>📍 Selecciona zona de entrega</button>
+                  }
+                  <Card style={{padding:"16px",marginBottom:16}}>
+                    {[["Subtotal",mxn(cartSub)],["Envío",zone?`$${zone.price}`:"Pendiente"]].map(([l,v])=>(
+                      <div key={l} style={{display:"flex",justifyContent:"space-between",marginBottom:8}}><span style={{fontSize:13,color:C.muted}}>{l}</span><span style={{fontSize:13}}>{v}</span></div>
+                    ))}
+                    <div style={{display:"flex",justifyContent:"space-between",paddingTop:10,borderTop:`1px solid ${C.border}`}}><span style={{fontSize:14,fontWeight:800,letterSpacing:1,textTransform:"uppercase"}}>Total</span><span style={{fontSize:22,fontWeight:900,color:C.sale}}>{mxn(cartSub+(zone?.price||0))} MXN</span></div>
+                  </Card>
+                  <Btn label={zone?"Ir a pagar →":"Elige zona primero"} onClick={()=>{setCartOpen(false);if(zone)setScreen("checkout");else setScreen("locator");}} disabled={!zone}/>
+                </>
+              }
             </div>
           </div>
         </div>
       )}
+
+      {/* ══ FILTROS DRAWER ══════════════════════════════════ */}
+      {filtersOpen&&(
+        <div style={{position:"fixed",inset:0,zIndex:500}}>
+          <div onClick={()=>setFiltersOpen(false)} style={{position:"absolute",inset:0,background:"rgba(0,0,0,0.6)"}}/>
+          <div style={{position:"absolute",bottom:0,left:"50%",transform:"translateX(-50%)",width:"100%",maxWidth:390,background:C.cream,maxHeight:"92vh",overflowY:"auto",padding:"0 0 32px"}}>
+            {/* Header filtros */}
+            <div style={{padding:"18px 20px 14px",display:"flex",justifyContent:"space-between",alignItems:"center",borderBottom:`1px solid ${C.border}`,position:"sticky",top:0,background:C.cream,zIndex:1}}>
+              <div style={{fontSize:16,fontWeight:900,color:C.black,fontFamily:FONT.display,letterSpacing:2}}>FILTROS</div>
+              <div style={{display:"flex",gap:10,alignItems:"center"}}>
+                {(activeFilters>0||sortBy!=="default")&&(
+                  <button onClick={clearFilters} style={{fontSize:11,color:C.terra,background:"none",border:"none",cursor:"pointer",fontWeight:700,letterSpacing:.5,textTransform:"uppercase"}}>
+                    Limpiar todo
+                  </button>
+                )}
+                <button onClick={()=>setFiltersOpen(false)} style={{background:C.black,border:"none",width:32,height:32,cursor:"pointer",color:C.white,fontSize:16,display:"flex",alignItems:"center",justifyContent:"center"}}>✕</button>
+              </div>
+            </div>
+
+            <div style={{padding:"0 20px"}}>
+              {/* Ordenar por */}
+              <div style={{fontSize:11,fontWeight:700,color:C.muted,letterSpacing:2,textTransform:"uppercase",padding:"16px 0 10px"}}>Ordenar por</div>
+              <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:4}}>
+                {[["default","Relevancia"],["newest","Más nuevos"],["price_asc","Precio ↑"],["price_desc","Precio ↓"]].map(([k,l])=>(
+                  <button key={k} onClick={()=>setSortBy(k)} style={{padding:"8px 14px",border:`1.5px solid ${sortBy===k?C.black:C.border}`,background:sortBy===k?C.black:"transparent",color:sortBy===k?C.white:C.black,fontSize:12,fontWeight:600,cursor:"pointer",transition:"all .15s"}}>{l}</button>
+                ))}
+              </div>
+
+              {/* Categoría */}
+              {CATS.length>0&&<>
+                <div style={{fontSize:11,fontWeight:700,color:C.muted,letterSpacing:2,textTransform:"uppercase",padding:"16px 0 10px"}}>Categoría</div>
+                <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:4}}>
+                  {CATS.map(c=>(
+                    <button key={c} onClick={()=>toggle(fCat,setFCat,c)} style={{padding:"8px 14px",border:`1.5px solid ${fCat.includes(c)?C.black:C.border}`,background:fCat.includes(c)?C.black:"transparent",color:fCat.includes(c)?C.white:C.black,fontSize:12,fontWeight:600,cursor:"pointer",transition:"all .15s"}}>{c}</button>
+                  ))}
+                </div>
+              </>}
+
+              {/* Género */}
+              {GENDERS.length>0&&<>
+                <div style={{fontSize:11,fontWeight:700,color:C.muted,letterSpacing:2,textTransform:"uppercase",padding:"16px 0 10px"}}>Género</div>
+                <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:4}}>
+                  {GENDERS.map(g=>(
+                    <button key={g} onClick={()=>toggle(fGender,setFGender,g)} style={{padding:"8px 14px",border:`1.5px solid ${fGender.includes(g)?C.black:C.border}`,background:fGender.includes(g)?C.black:"transparent",color:fGender.includes(g)?C.white:C.black,fontSize:12,fontWeight:600,cursor:"pointer",transition:"all .15s"}}>{g}</button>
+                  ))}
+                </div>
+              </>}
+
+              {/* Precio máximo */}
+              {PRICE_OPTS.length>0&&<>
+                <div style={{fontSize:11,fontWeight:700,color:C.muted,letterSpacing:2,textTransform:"uppercase",padding:"16px 0 10px"}}>Precio máximo</div>
+                <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:20}}>
+                  {PRICE_OPTS.map(p=>(
+                    <button key={p} onClick={()=>setFPriceMax(fPriceMax===p?null:p)} style={{padding:"8px 14px",border:`1.5px solid ${fPriceMax===p?C.terra:C.border}`,background:fPriceMax===p?C.terraL:"transparent",color:fPriceMax===p?C.terra:C.black,fontSize:12,fontWeight:600,cursor:"pointer",transition:"all .15s"}}>hasta ${p}</button>
+                  ))}
+                </div>
+              </>}
+            </div>
+
+            {/* Botón aplicar */}
+            <div style={{padding:"0 20px"}}>
+              <button onClick={()=>setFiltersOpen(false)} style={{width:"100%",padding:"16px",fontSize:13,fontWeight:900,letterSpacing:2,textTransform:"uppercase",background:C.black,color:C.white,border:"none",cursor:"pointer"}}>
+                VER {vis.length} PRODUCTO{vis.length!==1?"S":""}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ══ HERO BANNER ══════════════════════════════════════ */}
       <div style={{position:"relative",height:240,overflow:"hidden",background:C.black}}>
         <img src="https://images.unsplash.com/photo-1483985988355-763728e1935b?w=800&q=80" alt="CASI" style={{position:"absolute",inset:0,width:"100%",height:"100%",objectFit:"cover",opacity:.45}} onError={e=>e.target.style.opacity=0}/>
         <div style={{position:"absolute",inset:0,background:"linear-gradient(to top,rgba(10,10,10,0.9) 0%,rgba(10,10,10,0.2) 60%)"}}/>
         <div style={{position:"absolute",top:16,left:0,right:0,textAlign:"center",fontSize:26,fontWeight:900,color:C.white,letterSpacing:10,fontFamily:"serif"}}>CASI</div>
+        <div style={{position:"absolute",top:52,left:0,right:0,textAlign:"center",fontSize:10,color:"rgba(255,255,255,0.5)",letterSpacing:4,textTransform:"uppercase"}}>Ropa americana · Sierra Sur, Oaxaca</div>
         <div style={{position:"absolute",bottom:0,left:0,right:0,padding:"0 16px 16px",display:"flex",gap:8,flexWrap:"wrap"}}>
-          <button onClick={()=>setScreen("locator")} style={{background:"rgba(255,255,255,0.15)",color:C.white,border:"1px solid rgba(255,255,255,0.3)",padding:"6px 14px",fontSize:11,fontWeight:600,cursor:"pointer"}}>{zone?`📍 ${zone.name} · $${zone.price}`:"📍 ¿Dónde entregamos?"}</button>
-          {cart.length>0&&<button onClick={()=>setCartOpen(true)} style={{background:"rgba(255,255,255,0.95)",color:C.terra,border:"none",padding:"6px 14px",fontSize:11,fontWeight:700,cursor:"pointer"}}>🛒 {cart.length} artículo{cart.length>1?"s":""}</button>}
+          <button onClick={()=>setScreen("locator")} style={{background:"rgba(255,255,255,0.15)",color:C.white,border:"1px solid rgba(255,255,255,0.3)",padding:"6px 14px",fontSize:11,fontWeight:600,cursor:"pointer"}}>
+            {zone?`📍 ${zone.name} · $${zone.price}`:"📍 ¿Dónde entregamos?"}
+          </button>
+          {cart.length>0&&(
+            <button onClick={()=>setCartOpen(true)} style={{background:"rgba(255,255,255,0.95)",color:C.terra,border:"none",padding:"6px 14px",fontSize:11,fontWeight:700,cursor:"pointer"}}>
+              🛒 {cart.length} artículo{cart.length>1?"s":""}
+            </button>
+          )}
         </div>
       </div>
-      <div style={{position:"sticky",top:0,zIndex:20,background:"rgba(248,244,239,0.97)",backdropFilter:"blur(8px)",borderBottom:`1px solid ${C.border}`,padding:"10px 14px",display:"flex",gap:10,alignItems:"center"}}>
+
+      {/* ══ BARRA BÚSQUEDA + BOTONES ══════════════════════════ */}
+      <div style={{position:"sticky",top:0,zIndex:20,background:"rgba(248,244,239,0.97)",backdropFilter:"blur(8px)",borderBottom:`1px solid ${C.border}`,padding:"10px 12px",display:"flex",gap:8,alignItems:"center"}}>
+        {/* Búsqueda */}
         <div style={{position:"relative",flex:1}}>
           <span style={{position:"absolute",left:12,top:"50%",transform:"translateY(-50%)",fontSize:14,color:C.muted}}>⌕</span>
           <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Buscar en CASI…" style={{width:"100%",boxSizing:"border-box",padding:"10px 12px 10px 36px",border:`1px solid ${C.border}`,fontSize:13,outline:"none",background:C.white,color:C.black,fontFamily:FONT.body}}/>
         </div>
+        {/* Botón filtros */}
+        <button onClick={()=>setFiltersOpen(true)} style={{position:"relative",background:activeFilters>0||sortBy!=="default"?C.black:C.white,border:`1.5px solid ${activeFilters>0||sortBy!=="default"?C.black:C.border}`,width:42,height:42,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",fontSize:17,flexShrink:0,color:activeFilters>0||sortBy!=="default"?C.white:C.black}}>
+          ⚙
+          {(activeFilters>0||sortBy!=="default")&&(
+            <div style={{position:"absolute",top:-4,right:-4,background:C.terra,color:C.white,fontSize:9,fontWeight:900,width:16,height:16,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center"}}>
+              {activeFilters+(sortBy!=="default"?1:0)}
+            </div>
+          )}
+        </button>
+        {/* Botón carrito */}
         <button onClick={()=>setCartOpen(true)} style={{position:"relative",background:C.black,border:"none",width:42,height:42,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>
-          <span>🛒</span>
-          {cart.length>0&&<div style={{position:"absolute",top:-3,right:-3,background:C.terra,color:C.white,fontSize:9,fontWeight:900,width:17,height:17,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center"}}>{cart.length}</div>}
+          🛒
+          {cart.length>0&&(
+            <div style={{position:"absolute",top:-3,right:-3,background:C.terra,color:C.white,fontSize:9,fontWeight:900,width:17,height:17,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center"}}>{cart.length}</div>
+          )}
         </button>
       </div>
-      <div style={{display:"flex",overflowX:"auto",scrollbarWidth:"none",borderBottom:`1px solid ${C.border}`}}>
-        {CATS.map(c=><button key={c} onClick={()=>setCat(c)} style={{padding:"11px 14px",border:"none",background:"none",cursor:"pointer",flexShrink:0,fontSize:11,fontWeight:700,letterSpacing:1.5,textTransform:"uppercase",color:cat===c?C.black:C.muted,borderBottom:`2px solid ${cat===c?C.black:"transparent"}`,transition:"all .2s"}}>{c}</button>)}
+
+      {/* ══ CHIPS DE FILTROS ACTIVOS ════════════════════════ */}
+      <div style={{display:(activeFilters>0||sortBy!=="default")?"flex":"none",gap:6,overflowX:"auto",scrollbarWidth:"none",padding:"8px 12px",borderBottom:`1px solid ${C.border}`}} translate="no">
+        {fCat.map(c=>(
+          <button key={c} onClick={()=>toggle(fCat,setFCat,c)} style={{flexShrink:0,padding:"5px 10px",background:C.black,color:C.white,border:"none",fontSize:11,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"}}>
+            <span>{c}</span><span> ✕</span>
+          </button>
+        ))}
+        {fGender.map(g=>(
+          <button key={g} onClick={()=>toggle(fGender,setFGender,g)} style={{flexShrink:0,padding:"5px 10px",background:C.info,color:C.white,border:"none",fontSize:11,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"}}>
+            <span>{g}</span><span> ✕</span>
+          </button>
+        ))}
+        {fPriceMax&&(
+          <button key="price" onClick={()=>setFPriceMax(null)} style={{flexShrink:0,padding:"5px 10px",background:C.terraL,color:C.terra,border:`1px solid ${C.terra}`,fontSize:11,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"}}>
+            <span>hasta ${fPriceMax} ✕</span>
+          </button>
+        )}
+        {sortBy!=="default"&&(
+          <button key="sort" onClick={()=>setSortBy("default")} style={{flexShrink:0,padding:"5px 10px",background:C.stone,color:C.black,border:"none",fontSize:11,fontWeight:600,cursor:"pointer",whiteSpace:"nowrap"}}>
+            <span>{{price_asc:"Precio ↑",price_desc:"Precio ↓",newest:"Más nuevos"}[sortBy]}</span><span> ✕</span>
+          </button>
+        )}
+        <button key="clear" onClick={clearFilters} style={{flexShrink:0,padding:"5px 10px",background:"transparent",color:C.muted,border:`1px solid ${C.border}`,fontSize:11,cursor:"pointer",whiteSpace:"nowrap"}}>
+          <span>Limpiar todo</span>
+        </button>
       </div>
+
+      {/* ══ CONTADOR + ZONA ══════════════════════════════════ */}
       <div style={{padding:"8px 14px 6px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-        <div style={{fontSize:10,color:C.muted,letterSpacing:.5}}>{vis.length} PRODUCTOS</div>
-        <button onClick={()=>setScreen("locator")} style={{fontSize:10,color:zone?C.ok:C.muted,fontWeight:700,background:"none",border:"none",cursor:"pointer"}}>📍 {zone?zone.name:"¿Dónde entregamos?"}</button>
+        <div style={{fontSize:10,color:C.muted,letterSpacing:.5,fontWeight:600}}>
+          {vis.length} PRODUCTO{vis.length!==1?"S":""}
+          {products.length!==vis.length&&` de ${products.length}`}
+        </div>
+        <button onClick={()=>setScreen("locator")} style={{fontSize:10,color:zone?C.ok:C.muted,fontWeight:700,background:"none",border:"none",cursor:"pointer"}}>
+          📍 {zone?zone.name:"¿Dónde entregamos?"}
+        </button>
       </div>
-      {vis.length===0?<EmptyState icon="⌕" title="Sin productos" sub="No hay productos en esta categoría"/>:(
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:1,background:C.border}}>
-          {vis.map((p,i)=>(
-            <div key={p.sku||i} onClick={()=>setSelected(p)} style={{cursor:"pointer",background:C.white}}>
-              <div style={{position:"relative",paddingTop:"125%",background:C.stone,overflow:"hidden"}}>
-                {p.img?<img src={optimImg(p.img)} alt={p.name} loading="lazy" style={{position:"absolute",inset:0,width:"100%",height:"100%",objectFit:"cover"}}/>:<div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,color:C.muted,opacity:.2}}>▣</div>}
-                <button onClick={e=>{e.stopPropagation();addToCart({...p,price:p.salePrice});}} style={{position:"absolute",bottom:0,left:0,right:0,background:"rgba(0,0,0,0.75)",color:C.white,border:"none",padding:"8px",fontSize:11,fontWeight:700,cursor:"pointer",letterSpacing:1.5,textTransform:"uppercase"}}>+ Agregar</button>
+
+      {/* ══ GRID DE PRODUCTOS ══════════════════════════════════ */}
+      {vis.length===0
+        ?<EmptyState icon="⌕" title="Sin resultados" sub="Prueba cambiando o quitando algún filtro"/>
+        :(
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:1,background:C.border}}>
+            {vis.map((p,i)=>(
+              <div key={p.sku||i} onClick={()=>setSelected(p)} style={{cursor:"pointer",background:C.white}}>
+                {/* Foto */}
+                <div style={{position:"relative",paddingTop:"125%",background:C.stone,overflow:"hidden"}}>
+                  {p.img
+                    ?<img src={optimImg(p.img)} alt={p.name} loading="lazy" style={{position:"absolute",inset:0,width:"100%",height:"100%",objectFit:"cover"}}/>
+                    :<div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,color:C.muted,opacity:.2}}>📷</div>
+                  }
+                  {/* Badge talla */}
+                  {p.talla&&(
+                    <div style={{position:"absolute",top:7,left:7,background:"rgba(255,255,255,0.95)",fontSize:10,fontWeight:900,padding:"3px 8px",color:C.black,letterSpacing:.5}}>
+                      {p.talla}
+                    </div>
+                  )}
+                  {/* Overlay agotado */}
+                  {p.status==="sold"&&(
+                    <div style={{position:"absolute",inset:0,background:"rgba(0,0,0,0.52)",display:"flex",alignItems:"center",justifyContent:"center"}}>
+                      <div style={{background:C.white,padding:"6px 14px",fontSize:11,fontWeight:900,color:C.black,letterSpacing:1.5}}>AGOTADO</div>
+                    </div>
+                  )}
+                  {/* Botón agregar rápido */}
+                  {p.status!=="sold"&&(
+                    <button onClick={e=>{e.stopPropagation();addToCart({...p,price:p.salePrice});}} style={{position:"absolute",bottom:0,left:0,right:0,background:"rgba(0,0,0,0.80)",color:C.white,border:"none",padding:"9px 8px",fontSize:11,fontWeight:700,cursor:"pointer",letterSpacing:1.5,textTransform:"uppercase"}}>
+                      + Agregar
+                    </button>
+                  )}
+                </div>
+                {/* Info producto */}
+                <div style={{padding:"10px 10px 12px"}}>
+                  <div style={{fontSize:11,fontWeight:700,color:C.black,lineHeight:1.35,marginBottom:3,overflow:"hidden",display:"-webkit-box",WebkitLineClamp:2,WebkitBoxOrient:"vertical",fontFamily:"serif"}}>
+                    {p.name}
+                  </div>
+                  <div style={{fontSize:10,color:C.muted,marginBottom:5}}>
+                    {p.cat}{p.color?` · ${p.color}`:""}
+                  </div>
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                    <div style={{fontSize:15,fontWeight:900,color:C.sale}}>{mxn(p.salePrice)}</div>
+                    {p.gender&&<div style={{fontSize:9,color:C.muted,background:C.stone,padding:"2px 6px",letterSpacing:.5,fontWeight:600}}>{p.gender}</div>}
+                  </div>
+                </div>
               </div>
-              <div style={{padding:"10px 10px 12px",borderBottom:`1px solid ${C.stone}`}}>
-                <div style={{fontSize:11,fontWeight:700,color:C.black,lineHeight:1.35,marginBottom:3,overflow:"hidden",display:"-webkit-box",WebkitLineClamp:2,WebkitBoxOrient:"vertical",fontFamily:"serif"}}>{p.name}</div>
-                <div style={{fontSize:10,color:C.muted,marginBottom:4}}>{p.cat}{p.talla?` · T:${p.talla}`:""}</div>
-                <div style={{fontSize:14,fontWeight:900,color:C.sale}}>{mxn(p.salePrice)}</div>
-              </div>
+            ))}
+          </div>
+        )
+      }
+
+      {/* ══ BARRA STICKY DEL CARRITO ══════════════════════════ */}
+      {cart.length>0&&(
+        <div onClick={()=>setCartOpen(true)} style={{position:"sticky",bottom:0,zIndex:100,background:C.black,margin:"10px 14px 14px",padding:"14px 20px",display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer",boxShadow:"0 8px 32px rgba(0,0,0,0.4)"}}>
+          <div style={{display:"flex",alignItems:"center",gap:12}}>
+            <div style={{position:"relative"}}>
+              <span style={{fontSize:22}}>🛒</span>
+              <div style={{position:"absolute",top:-4,right:-4,background:C.terra,color:C.white,fontSize:9,fontWeight:900,width:16,height:16,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center"}}>{cart.length}</div>
             </div>
-          ))}
+            <div>
+              <div style={{fontSize:12,fontWeight:700,color:C.white}}>{cart.length} artículo{cart.length>1?"s":""}</div>
+              <div style={{fontSize:10,color:"rgba(255,255,255,0.6)"}}>Toca para comprar</div>
+            </div>
+          </div>
+          <div style={{textAlign:"right"}}>
+            <div style={{fontSize:17,fontWeight:900,color:C.white}}>{mxn(cartSub+(zone?.price||0))}</div>
+            <div style={{fontSize:10,color:C.terra,fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>Ver carrito →</div>
+          </div>
         </div>
       )}
-      {cart.length>0&&<div onClick={()=>setCartOpen(true)} style={{position:"sticky",bottom:0,zIndex:100,background:C.black,margin:"10px 14px 14px",padding:"14px 20px",display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer",boxShadow:"0 8px 32px rgba(0,0,0,0.4)"}}>
-        <div style={{display:"flex",alignItems:"center",gap:12}}>
-          <div style={{position:"relative"}}><span style={{fontSize:22}}>🛒</span><div style={{position:"absolute",top:-4,right:-4,background:C.terra,color:C.white,fontSize:9,fontWeight:900,width:16,height:16,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center"}}>{cart.length}</div></div>
-          <div><div style={{fontSize:12,fontWeight:700,color:C.white}}>{cart.length} artículo{cart.length>1?"s":""}</div><div style={{fontSize:10,color:"rgba(255,255,255,0.6)"}}>Toca para comprar</div></div>
-        </div>
-        <div style={{textAlign:"right"}}><div style={{fontSize:17,fontWeight:900,color:C.white}}>{mxn(cartSub+(zone?.price||0))}</div><div style={{fontSize:10,color:C.terra,fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>Ver carrito →</div></div>
-      </div>}
     </div>
   );
 }
@@ -609,10 +850,10 @@ export default function App(){
   const alertCount=orders.filter(o=>["nuevo","verificando"].includes(o.status)).length;
 
   if(!ready)return(
-    <div style={{minHeight:"100vh",background:C.black,display:"flex",alignItems:"center",justifyContent:"center",fontFamily:FONT.body}}>
+    <div translate="no" style={{minHeight:"100vh",background:C.black,display:"flex",alignItems:"center",justifyContent:"center",fontFamily:FONT.body}}>
       <div style={{textAlign:"center"}}>
         <div style={{fontSize:42,fontWeight:900,color:C.white,letterSpacing:16,fontFamily:"serif",marginBottom:16}}>CASI</div>
-        <div style={{display:"flex",gap:6,justifyContent:"center"}}>{[0,1,2].map(i=><div key={i} style={{width:8,height:8,borderRadius:"50%",background:C.terra,animation:`ld .8s ease-in-out ${i*0.2}s infinite alternate`}}/>)}</div>
+        <div style={{display:"flex",gap:6,justifyContent:("center")}}>{[0,1,2].map(i=><div key={i} style={{width:8,height:8,borderRadius:"50%",background:C.terra,animation:`ld .8s ease-in-out ${i*0.2}s infinite alternate`}}/>)}</div>
         <style>{`@keyframes ld{from{opacity:.3;transform:scale(.8)}to{opacity:1;transform:scale(1)}}`}</style>
       </div>
     </div>
@@ -635,7 +876,7 @@ export default function App(){
       if(adminTab==="orders")return<AdminOrders orders={orders} onUpdateStatus={handleUpdateStatus} onBack={()=>setAdminTab("dashboard")}/>;
       if(adminTab==="tickets")return<TicketsScreen onBack={()=>setAdminTab("dashboard")}/>;
       if(adminTab==="shipments")return<ShipmentsScreen onBack={()=>setAdminTab("dashboard")}/>;
-      if(adminTab==="inventory")return<InventoryScreen 
+      if(adminTab==="inventory")return<InventoryScreen
           inventory={inventory}
           onRefresh={async()=>{const inv=await dbGetAll(COL.inventory,"createdAt","desc");setInventory(inv);}}
           onBack={()=>setAdminTab("dashboard")}/>;
