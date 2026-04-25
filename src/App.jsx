@@ -2,12 +2,12 @@ import { useState, useEffect, useRef } from "react";
 import { C, FONT, Btn, WaBtn, Inp, Card, SectionTitle, TopBar,
          InfoBox, Badge, Loading, EmptyState, PinLock, StatsRow, OfflineBanner } from "./ui.jsx";
 import { initFirebase, dbAdd, dbUpdate, dbGetAll, dbWhere, dbListen } from "./firebase.js";
-import { TicketsScreen } from "./Tickets.jsx";
-import { ShipmentsScreen } from "./Shipments.jsx";
-import { InventoryScreen } from "./Inventory.jsx";
+import { TicketsScreen } from "./Tickets.jsx";//administrar pedidos
+import { ShipmentsScreen } from "./Shipments.jsx";//administrar envíos
+import { InventoryScreen } from "./Inventory.jsx";//Administrar inventario
 import { COL, ZONES, BASE_COORDS, STORE_CONFIG, ORDER_STATUS } from "./config.js";
 
-// ─── FORMATEO SEGURO (sin toLocaleString) ────────────────
+// ─── FORMATEO SEGURO ────────────────
 function numFmt(n, dec=2){
   const num=parseFloat(n)||0;
   const fixed=Math.abs(num).toFixed(dec);
@@ -28,10 +28,16 @@ function zoneFor(lat,lng){
   return{...ZONES.find(z=>d<=z.maxKm)||ZONES[3],km:d.toFixed(1)};
 }
 const TOWNS=[
-  {name:"Tu pueblo (demo)",lat:BASE_COORDS.lat,lng:BASE_COORDS.lng},
-  {name:"San Sebastián R.H.",lat:BASE_COORDS.lat+0.07,lng:BASE_COORDS.lng+0.05},
-  {name:"Putla de Guerrero",lat:BASE_COORDS.lat+0.18,lng:BASE_COORDS.lng+0.14},
-  {name:"Juquila",lat:BASE_COORDS.lat+0.42,lng:BASE_COORDS.lng+0.35},
+  {name:"Santa Catarina Loxicha",lat:BASE_COORDS.lat,lng:BASE_COORDS.lng},
+  {name:"San Mateo R.H.",lat:BASE_COORDS.lat+0.07,lng:BASE_COORDS.lng+0.05},
+  {name:"Miahuatlán de Porfirio Díaz",lat:BASE_COORDS.lat+0.18,lng:BASE_COORDS.lng+0.14},
+  {name:"Puerto Escondido",lat:BASE_COORDS.lat+0.42,lng:BASE_COORDS.lng+0.35},
+  //San Baltazar Loxicha
+  //San Agustín Loxicha
+  //San Francisco Coatlán
+  //San Pablo Coatlán
+  //San Pedro Coatlán
+  //Santa Marta ...San Antonio la Lana... Cuixtla...San josé del Pacífico
 ];
 
 function optimImg(url){
@@ -174,7 +180,7 @@ function Checkout({cart,zone,onBack,onConfirm}){
   );
 }
 
-// ─── PUBLIC STORE ─────────────────────────────────────────
+// ─── PUBLIC STORE Tienda Online─────────────────────────────────────────
 function Store({onOrder}){
   const[products,setProducts]=useState([]);
   const[loading,setLoading]=useState(true);
@@ -192,7 +198,7 @@ function Store({onOrder}){
   const[fPriceMax,setFPriceMax]=useState(null);
   const[sortBy,setSortBy]=useState("default");
 
-  /*useEffect(()=>{
+  /*useEffect(()=>// VERSIÓN ANTERIOR — filtra en la consulta, con índice:{
     dbWhere(COL.inventory,"active","==",true).then(items=>{
       setProducts(items);
       setLoading(false);
@@ -244,7 +250,7 @@ function Store({onOrder}){
 
   // ── Detalle de producto
   if(selected)return(
-    <div style={{background:C.cream,minHeight:"100%",paddingBottom:100}}>
+    <div translate="no" style={{background:C.cream,minHeight:"100%",paddingBottom:100}}>
       <TopBar title="CASI" onBack={()=>setSelected(null)}/>
       <div style={{width:"100%",height:340,position:"relative",background:C.stone,overflow:"hidden"}}>
         {selected.img
@@ -256,7 +262,7 @@ function Store({onOrder}){
         <div style={{fontSize:10,color:C.muted,letterSpacing:2,textTransform:"uppercase",marginBottom:4}}>CASI · {selected.sku}</div>
         <div style={{fontSize:24,fontWeight:900,color:C.black,lineHeight:1.2,marginBottom:10,fontFamily:FONT.display}}>{selected.name}</div>
         <div style={{fontSize:28,fontWeight:900,color:C.sale,marginBottom:12}}>{mxn(selected.salePrice)}<span style={{fontSize:13,color:C.muted,fontWeight:400}}> MXN</span></div>
-        {/* Badges de atributos */}
+        {/* Badges de atributos Insignias, Talla, genero, categoria, color, Descripción */}
         <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:16}}>
           {selected.cat&&<span style={{padding:"5px 12px",background:C.stone,fontSize:11,fontWeight:700,color:C.black,letterSpacing:.5}}>{selected.cat}</span>}
           {selected.gender&&<span style={{padding:"5px 12px",background:C.stone,fontSize:11,fontWeight:600,color:C.muted}}>{selected.gender}</span>}
@@ -280,7 +286,7 @@ function Store({onOrder}){
   if(loading)return<Loading message="Cargando productos…"/>;
 
   return(
-    <div style={{background:C.cream,minHeight:"100%",paddingBottom:8}}>
+    <div translate="no" style={{background:C.cream,minHeight:"100%",paddingBottom:8}}>
 
       {/* ══ CARRITO DRAWER ══════════════════════════════════ */}
       {cartOpen&&(
@@ -346,7 +352,7 @@ function Store({onOrder}){
             </div>
 
             <div style={{padding:"0 20px"}}>
-              {/* Ordenar por */}
+              {/* Ordenar por Relevancia, Más nuevos, Precio ↑, Precio ↓ */}
               <div style={{fontSize:11,fontWeight:700,color:C.muted,letterSpacing:2,textTransform:"uppercase",padding:"16px 0 10px"}}>Ordenar por</div>
               <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:4}}>
                 {[["default","Relevancia"],["newest","Más nuevos"],["price_asc","Precio ↑"],["price_desc","Precio ↓"]].map(([k,l])=>(
@@ -400,7 +406,7 @@ function Store({onOrder}){
         <img src="https://images.unsplash.com/photo-1483985988355-763728e1935b?w=800&q=80" alt="CASI" style={{position:"absolute",inset:0,width:"100%",height:"100%",objectFit:"cover",opacity:.45}} onError={e=>e.target.style.opacity=0}/>
         <div style={{position:"absolute",inset:0,background:"linear-gradient(to top,rgba(10,10,10,0.9) 0%,rgba(10,10,10,0.2) 60%)"}}/>
         <div style={{position:"absolute",top:16,left:0,right:0,textAlign:"center",fontSize:26,fontWeight:900,color:C.white,letterSpacing:10,fontFamily:"serif"}}>CASI</div>
-        <div style={{position:"absolute",top:52,left:0,right:0,textAlign:"center",fontSize:10,color:"rgba(255,255,255,0.5)",letterSpacing:4,textTransform:"uppercase"}}>Ropa americana · Sierra Sur, Oaxaca</div>
+        <div style={{position:"absolute",top:52,left:0,right:0,textAlign:"center",fontSize:10,color:"rgba(255,255,255,0.5)",letterSpacing:4,textTransform:"uppercase"}}>Moda para todos · Sierra Sur, Costa, Oaxaca</div>
         <div style={{position:"absolute",bottom:0,left:0,right:0,padding:"0 16px 16px",display:"flex",gap:8,flexWrap:"wrap"}}>
           <button onClick={()=>setScreen("locator")} style={{background:"rgba(255,255,255,0.15)",color:C.white,border:"1px solid rgba(255,255,255,0.3)",padding:"6px 14px",fontSize:11,fontWeight:600,cursor:"pointer"}}>
             {zone?`📍 ${zone.name} · $${zone.price}`:"📍 ¿Dónde entregamos?"}
@@ -476,56 +482,82 @@ function Store({onOrder}){
         </button>
       </div>
 
-      {/* ══ GRID DE PRODUCTOS ══════════════════════════════════ */}
+      {/* ══ GRID ESTILO SHEIN — COLUMNAS DESNIVELADAS ══════════ */}
+      <div translate="no">
       {vis.length===0
-        ?<EmptyState icon="⌕" title="Sin resultados" sub="Prueba cambiando o quitando algún filtro"/>
-        :(
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:1,background:C.border}}>
-            {vis.map((p,i)=>(
-              <div key={p.sku||i} onClick={()=>setSelected(p)} style={{cursor:"pointer",background:C.white}}>
-                {/* Foto */}
-                <div style={{position:"relative",paddingTop:"125%",background:C.stone,overflow:"hidden"}}>
-                  {p.img
-                    ?<img src={optimImg(p.img)} alt={p.name} loading="lazy" style={{position:"absolute",inset:0,width:"100%",height:"100%",objectFit:"cover"}}/>
-                    :<div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,color:C.muted,opacity:.2}}>📷</div>
-                  }
-                  {/* Badge talla */}
-                  {p.talla&&(
-                    <div style={{position:"absolute",top:7,left:7,background:"rgba(255,255,255,0.95)",fontSize:10,fontWeight:900,padding:"3px 8px",color:C.black,letterSpacing:.5}}>
-                      {p.talla}
+        ?<div style={{padding:"48px 20px",textAlign:"center"}}>
+            <div style={{fontSize:48,marginBottom:12}}>⌕</div>
+            <div style={{fontSize:16,fontWeight:800,color:C.black,marginBottom:6,fontFamily:FONT.display}}>Sin resultados</div>
+            <div style={{fontSize:13,color:C.muted}}>Prueba cambiando o quitando algún filtro</div>
+            {search&&<button onClick={()=>setSearch("")} style={{marginTop:16,padding:"10px 20px",background:C.black,color:C.white,border:"none",fontSize:12,fontWeight:700,cursor:"pointer",letterSpacing:1}}>Limpiar búsqueda</button>}
+          </div>
+        :(()=>{
+          const left=vis.filter((_,i)=>i%2===0);
+          const right=vis.filter((_,i)=>i%2!==0);
+          const ProductCard=({p})=>(
+            <div onClick={()=>setSelected(p)} style={{cursor:"pointer",background:C.white,marginBottom:3,overflow:"hidden"}}>
+              {/* FOTO */}
+              <div style={{position:"relative",background:"#fff",padding:3}}>
+                {p.img
+                  ?<img
+                      src={optimImg(p.img)}
+                      alt=""
+                      loading="lazy"
+                      style={{width:"100%",display:"block",aspectRatio:"3/4",objectFit:"cover",objectPosition:"top center"}}
+                    />
+                  :<div style={{width:"100%",aspectRatio:"3/4",background:"#f5f5f5",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:4}}>
+                    <span style={{fontSize:26,opacity:.2}}>📷</span>
+                    <span style={{fontSize:9,color:C.muted,opacity:.4,letterSpacing:1,textTransform:"uppercase"}}>Sin foto</span>
+                  </div>
+                }
+                {/* Badge talla — removido */}
+                {/* Badge género — esquina superior derecha (comentado por ahora)
+                {p.gender&&(
+                  <div style={{position:"absolute",top:6,right:6,background:"rgba(255,255,255,0.9)",fontSize:9,fontWeight:700,padding:"2px 7px",color:C.muted,borderRadius:1}}>
+                    <span>{p.gender}</span>
+                  </div>
+                )}*/}
+                {/* Overlay agotado */}
+                {p.status==="sold"&&(
+                  <div style={{position:"absolute",inset:0,background:"rgba(255,255,0,0.75)",display:"flex",alignItems:"center",justifyContent:"center"}}>
+                    <div style={{background:C.black,padding:"6px 14px",fontSize:10,fontWeight:900,color:C.white,letterSpacing:2,borderRadius:1}}>
+                      <span>AGOTADO</span>
                     </div>
-                  )}
-                  {/* Overlay agotado */}
-                  {p.status==="sold"&&(
-                    <div style={{position:"absolute",inset:0,background:"rgba(0,0,0,0.52)",display:"flex",alignItems:"center",justifyContent:"center"}}>
-                      <div style={{background:C.white,padding:"6px 14px",fontSize:11,fontWeight:900,color:C.black,letterSpacing:1.5}}>AGOTADO</div>
-                    </div>
-                  )}
-                  {/* Botón agregar rápido */}
-                  {p.status!=="sold"&&(
-                    <button onClick={e=>{e.stopPropagation();addToCart({...p,price:p.salePrice});}} style={{position:"absolute",bottom:0,left:0,right:0,background:"rgba(0,0,0,0.80)",color:C.white,border:"none",padding:"9px 8px",fontSize:11,fontWeight:700,cursor:"pointer",letterSpacing:1.5,textTransform:"uppercase"}}>
-                      + Agregar
-                    </button>
-                  )}
+                  </div>
+                )}
+                {/* Botón + removido */}
+              </div>
+              {/* Información del producto */}
+              <div style={{padding:"6px 8px 10px",overflow:"hidden"}}>
+                <div style={{fontSize:11,fontWeight:600,color:"#222",lineHeight:1.4,marginBottom:3,display:"-webkit-box",WebkitLineClamp:2,WebkitBoxOrient:"vertical",overflow:"hidden"}}>
+                  {p.name}
                 </div>
-                {/* Info producto */}
-                <div style={{padding:"10px 10px 12px"}}>
-                  <div style={{fontSize:11,fontWeight:700,color:C.black,lineHeight:1.35,marginBottom:3,overflow:"hidden",display:"-webkit-box",WebkitLineClamp:2,WebkitBoxOrient:"vertical",fontFamily:"serif"}}>
-                    {p.name}
+                {p.cat&&(
+                  <div style={{fontSize:9,color:C.muted,marginBottom:4,textTransform:"uppercase",letterSpacing:.5}}>
+                    <span>{p.cat}</span>{p.color&&<span> . {p.color}</span>}
                   </div>
-                  <div style={{fontSize:10,color:C.muted,marginBottom:5}}>
-                    {p.cat}{p.color?` · ${p.color}`:""}
-                  </div>
-                  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-                    <div style={{fontSize:15,fontWeight:900,color:C.sale}}>{mxn(p.salePrice)}</div>
-                    {p.gender&&<div style={{fontSize:9,color:C.muted,background:C.stone,padding:"2px 6px",letterSpacing:.5,fontWeight:600}}>{p.gender}</div>}
-                  </div>
+                )}
+                <div style={{fontSize:14,fontWeight:900,color:"#e84040"}}>
+                  <span>{mxn(p.salePrice)}</span>
                 </div>
               </div>
-            ))}
-          </div>
-        )
+            </div>
+          );
+          return(
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:3,padding:"0 3px 3px",background:"#f0ece7"}}>
+              {/* Columna izquierda */}
+              <div style={{display:"flex",flexDirection:"column",gap:3}}>
+                {left.map((p,i)=><ProductCard key={p.sku||i*2} p={p}/>)}
+              </div>
+              {/* Columna derecha */}
+              <div style={{display:"flex",flexDirection:"column",gap:3}}>
+                {right.map((p,i)=><ProductCard key={p.sku||i*2+1} p={p}/>)}
+              </div>
+            </div>
+          );
+        })()
       }
+      </div>{/* fin translate=no */}
 
       {/* ══ BARRA STICKY DEL CARRITO ══════════════════════════ */}
       {cart.length>0&&(
