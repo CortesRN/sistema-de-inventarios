@@ -28,7 +28,7 @@ export async function initFirebase() {
 // Usa transacción para garantizar unicidad
 export async function nextId(name) {
   const { db, fb } = await initFirebase();
-  const ref = fb.doc(db, COL.counters, name);
+  const ref = fb.doc(db, COL.contadores, name);
   let next;
   await fb.runTransaction(db, async tx => {
     const snap = await tx.get(ref);

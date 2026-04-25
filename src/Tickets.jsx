@@ -3,7 +3,7 @@ import { C, FONT, Btn, Inp, Select, Card, SectionTitle, TopBar,
          InfoBox, Table, Loading, Badge, EmptyState } from "./ui.jsx";
 import { dbAdd, dbUpdate, dbGetAll, nextId, padId, fetchExchangeRate } from "./firebase.js";
 import { costIndividual, costLote, toMXN, buildCostSummary, validateTicketLines, round2 } from "./costing.js";
-import { COL, CATS, STORE_CONFIG, TICKET_STATUS } from "./config.js";
+import { COL, CATEGORIAS, STORE_CONFIG, TICKET_STATUS, UBICACIONES } from "./config.js";
 
 // ─── TICKET LIST ──────────────────────────────────────────
 export function TicketList({ onNew, onOpen, onBack }) {
@@ -30,7 +30,7 @@ export function TicketList({ onNew, onOpen, onBack }) {
       </div>
 
       {tickets.length === 0 ? (
-        <EmptyState icon="🧾" title="Sin tickets" sub="Agrega tu primer ticket de compra"/>
+        <EmptyState icon="🧾" title="Sin tickets de compra" sub="Agrega tu primer ticket de compra"/>
       ) : tickets.map(t => {
         const s = TICKET_STATUS[t.status] || TICKET_STATUS.draft;
         return (
@@ -308,7 +308,7 @@ export function TicketDetail({ ticket, onBack, onNext }) {
                   label="Categoría"
                   value={line.cat}
                   onChange={v => updateLine(idx, "cat", v)}
-                  options={CATS}
+                  options={CATEGORIAS}
                   small
                 />
 
@@ -513,7 +513,7 @@ export function CostPreview({ ticket, onBack, onGenerate }) {
   async function handleGenerate() {
     setGenerating(true);
 
-    // Marcar ticket como costed
+    // Marcar ticket como costado
     await dbUpdate(COL.tickets, ticket.id, {
       status:      "costed",
       costedAt:    new Date().toISOString(),
@@ -524,31 +524,53 @@ export function CostPreview({ ticket, onBack, onGenerate }) {
         : costedLines.reduce((a, l) => a + (l.totalCostLine || 0), 0),
     });
 
-    // Generar piezas en inventario
+    const esOrigenUSA = ticket.origin === "usa";
+
+    // Generar piezas en inventario con nuevos campos en español
     if (isLote) {
       for (let i = 0; i < (ticket.totalPieces || 0); i++) {
         const invNum = await nextId("inventory");
         const skuNum = await nextId("sku");
-        await dbAdd(COL.inventory, {
-          invId:         padId(invNum, "INV-"),
-          sku:           padId(skuNum, "OA-"),
-          ticketId:      ticket.ticketId,
-          ticketDocId:   ticket.id,
-          method:        "lote",
-          cat:           "Ropa",
-          name:          "Artículo de lote",
-          descr:         "",
-          talla:         "",
-          color:         "",
-          img:           "",
-          costUSD:       loteResult.costUSD,
-          freightUSD:    0,
-          finalCostUSD:  loteResult.costUSD,
-          finalCostMXN:  loteResult.costUSD * rate,
-          exchangeRate:  rate,
-          isProvisional: true,
-          status:        "in_warehouse",
-          active:        false,
+        await dbAdd(COL.inventario, {
+          // ── Identificadores
+          idInterno:         padId(invNum, "INV-"),
+          clave:             padId(skuNum, "OA-"),
+          ticketOrigen:      ticket.ticketId,
+          ticketDocId:       ticket.id,
+          metodo:            "lote",
+
+          // ── Descripción del producto (se completa después en inventario)
+          nombre:            "Artículo de lote",
+          categoria:         "Ropa",
+          talla:             "",
+          color:             "",
+          genero:            "",
+          marca:             "",
+          condicion:         "buena",
+          descripcion:       "",
+          foto:              "",
+          fotos:             [],
+
+          // ── Costo USA
+          ...(esOrigenUSA ? {
+            costoUSD:          loteResult.costUSD,
+            fletePorPrendaUSD: 0,           // se actualiza al registrar el envío
+            costoTotalUSD:     loteResult.costUSD,
+            tipoCambio:        rate,
+            costoMXN:          loteResult.costUSD * rate,
+          } : {
+            costoMXN:          loteResult.costUSD, // en México el "costUSD" ya viene en MXN
+            fleteMXN:          0,
+          }),
+
+          // ── Estado
+          esProvisional:     true,           // se actualiza al registrar envío
+          estado:            "en_bodega",
+          ubicacion:         esOrigenUSA ? "usa" : "bodega_scl",
+          activo:            false,
+          precio:            0,
+          origen:            ticket.origin || "usa",
+          fechaIngreso:      new Date().toISOString().slice(0, 10),
         });
       }
     } else {
@@ -557,33 +579,52 @@ export function CostPreview({ ticket, onBack, onGenerate }) {
         for (let i = 0; i < qty; i++) {
           const invNum = await nextId("inventory");
           const skuNum = await nextId("sku");
-          await dbAdd(COL.inventory, {
-            invId:         padId(invNum, "INV-"),
-            sku:           padId(skuNum, "OA-"),
-            ticketId:      ticket.ticketId,
-            ticketDocId:   ticket.id,
-            lineDescr:     line.descr,
-            method:        "individual",
-            cat:           line.cat || "Ropa",
-            name:          line.descr,
-            descr:         "",
-            talla:         "",
-            color:         "",
-            img:           "",
-            costUSD:       line.costUSD,
-            freightUSD:    0,
-            finalCostUSD:  line.costUSD,
-            finalCostMXN:  line.costUSD * rate,
-            exchangeRate:  rate,
-            isProvisional: true,
-            status:        "in_warehouse",
-            active:        false,
+          await dbAdd(COL.inventario, {
+            // ── Identificadores
+            idInterno:         padId(invNum, "INV-"),
+            clave:             padId(skuNum, "OA-"),
+            ticketOrigen:      ticket.ticketId,
+            ticketDocId:       ticket.id,
+            metodo:            "individual",
+
+            // ── Descripción (se completa después en inventario)
+            nombre:            line.descr,
+            categoria:         line.cat || "Ropa",
+            talla:             "",
+            color:             "",
+            genero:            "",
+            marca:             "",
+            condicion:         "buena",
+            descripcion:       "",
+            foto:              "",
+            fotos:             [],
+
+            // ── Costo
+            ...(esOrigenUSA ? {
+              costoUSD:          line.costUSD,
+              fletePorPrendaUSD: 0,           // se actualiza al registrar envío
+              costoTotalUSD:     line.costUSD,
+              tipoCambio:        rate,
+              costoMXN:          line.costUSD * rate,
+            } : {
+              costoMXN:          line.costUSD, // en México costUSD contiene el monto en MXN
+              fleteMXN:          0,
+            }),
+
+            // ── Estado
+            esProvisional:     esOrigenUSA,    // México no necesita esperar el envío
+            estado:            "en_bodega",
+            ubicacion:         esOrigenUSA ? "usa" : "bodega_scl",
+            activo:            false,
+            precio:            0,
+            origen:            ticket.origin || "usa",
+            fechaIngreso:      new Date().toISOString().slice(0, 10),
           });
         }
       }
     }
 
-    // Actualizar total de piezas
+    // Actualizar total de piezas en el ticket
     await dbUpdate(COL.tickets, ticket.id, { totalPieces: totalPiezas });
 
     setGenerating(false);
