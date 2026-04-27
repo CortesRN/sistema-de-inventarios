@@ -16,8 +16,35 @@ function leer(ticket, campoEs, campoEn, fallback = null) {
 function aNumero(valor) {
   if (typeof valor === "number") return Number.isFinite(valor) ? valor : 0;
   if (valor === null || valor === undefined) return 0;
-  const limpio = String(valor).replace(/[$,\s]/g, "");
-  const n = parseFloat(limpio);
+  let limpio = String(valor).replace(/[^\d,.-]/g, "").trim();
+  if (!limpio) return 0;
+
+  const tieneComa = limpio.includes(",");
+  const tienePunto = limpio.includes(".");
+
+  // Si trae ambos separadores, tomamos el último como decimal.
+  if (tieneComa && tienePunto) {
+    const ultimoComa = limpio.lastIndexOf(",");
+    const ultimoPunto = limpio.lastIndexOf(".");
+    const decimalEsComa = ultimoComa > ultimoPunto;
+    limpio = decimalEsComa
+      ? limpio.replace(/\./g, "").replace(",", ".")
+      : limpio.replace(/,/g, "");
+  } else if (tieneComa && !tienePunto) {
+    // Si solo hay coma: "14,99" => 14.99 ; "1,234" => 1234
+    const partes = limpio.split(",");
+    limpio = partes.length === 2 && partes[1].length <= 2
+      ? `${partes[0]}.${partes[1]}`
+      : limpio.replace(/,/g, "");
+  } else if (!tieneComa && tienePunto) {
+    // Si solo hay punto: "14.99" => 14.99 ; "1.234" => 1234
+    const partes = limpio.split(".");
+    limpio = partes.length === 2 && partes[1].length <= 2
+      ? limpio
+      : limpio.replace(/\./g, "");
+  }
+
+  const n = Number(limpio);
   return Number.isFinite(n) ? n : 0;
 }
 
@@ -112,7 +139,7 @@ export function NewTicket({ onBack, onCreated }) {
         origen,
         metodo,
         notas,
-        tipoCambio: parseFloat(tipoCambio) || STORE_CONFIG.exchangeRate,
+        tipoCambio: aNumero(tipoCambio) || STORE_CONFIG.exchangeRate,
         estado: "draft",
         totalPiezas: 0,
         costoTotalUSD: 0,
@@ -121,7 +148,7 @@ export function NewTicket({ onBack, onCreated }) {
         origin: origen,
         method: metodo,
         notes: notas,
-        exchangeRate: parseFloat(tipoCambio) || STORE_CONFIG.exchangeRate,
+        exchangeRate: aNumero(tipoCambio) || STORE_CONFIG.exchangeRate,
         status: "draft",
         totalPieces: 0,
         totalCostUSD: 0,
@@ -401,7 +428,7 @@ export function TicketDetail({ ticket, onBack, onNext }) {
                   <div style={{ background:C.white, padding:"8px 12px", borderTop:`1px solid ${C.border}`,
                     display:"flex", justifyContent:"space-between", alignItems:"center" }}>
                     <span style={{ fontSize:11, color:C.muted }}>
-                      {parseFloat(line.qty)||0} pzas × ${parseFloat(line.unitCost)||0}
+                      {aNumero(line.qty)||0} pzas × ${aNumero(line.unitCost)||0}
                     </span>
                     <span style={{ fontSize:13, fontWeight:700, color:C.terra }}>
                       = ${sub.toFixed(2)} USD
