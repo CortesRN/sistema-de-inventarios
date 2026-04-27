@@ -13,6 +13,13 @@ function leer(ticket, campoEs, campoEn, fallback = null) {
   if (ticket?.[campoEn] !== undefined) return ticket[campoEn];
   return fallback;
 }
+function aNumero(valor) {
+  if (typeof valor === "number") return Number.isFinite(valor) ? valor : 0;
+  if (valor === null || valor === undefined) return 0;
+  const limpio = String(valor).replace(/[$,\s]/g, "");
+  const n = parseFloat(limpio);
+  return Number.isFinite(n) ? n : 0;
+}
 
 // ─── TICKET LIST ──────────────────────────────────────────
 export function TicketList({ onNew, onOpen, onBack }) {
@@ -230,21 +237,24 @@ export function TicketDetail({ ticket, onBack, onNext }) {
   // ── Preview en tiempo real ─────────────────────────────
   // Calcula el subtotal de cada línea para mostrar al usuario
   function lineSubtotal(line) {
-    const q = parseFloat(line.qty)      || 0;
-    const c = parseFloat(line.unitCost) || 0;
+    const q = aNumero(line.qty);
+    const c = aNumero(line.unitCost);
     return q * c;
   }
 
   const totalBase = lines.reduce((a, l) => a + lineSubtotal(l), 0);
+  const baseLote = aNumero(ticketCost);
 
   let previewTax = 0;
   if (taxMode === "pct") {
-    previewTax = totalBase * ((parseFloat(taxPct) || 0) / 100);
+    const baseImpuestos = isLote ? baseLote : totalBase;
+    previewTax = baseImpuestos * (aNumero(taxPct) / 100);
   } else {
-    previewTax = parseFloat(taxFixed) || 0;
+    previewTax = aNumero(taxFixed);
   }
-  const previewOther = parseFloat(otherCosts) || 0;
-  const previewTotal = totalBase + previewTax + previewOther;
+  const previewOther = aNumero(otherCosts);
+  const previewBase = isLote ? baseLote : totalBase;
+  const previewTotal = previewBase + previewTax + previewOther;
 
   // ── Guardar ────────────────────────────────────────────
   async function handleSave() {
@@ -254,12 +264,12 @@ export function TicketDetail({ ticket, onBack, onNext }) {
       if (lines.length === 0) errs.push("Agrega al menos una línea de producto.");
       lines.forEach((l, i) => {
         if (!l.descr) errs.push(`Línea ${i+1}: escribe la descripción.`);
-        if (!(parseFloat(l.qty) > 0)) errs.push(`Línea ${i+1}: la cantidad debe ser mayor a 0.`);
-        if (!(parseFloat(l.unitCost) > 0)) errs.push(`Línea ${i+1}: el costo USD debe ser mayor a 0.`);
+        if (!(aNumero(l.qty) > 0)) errs.push(`Línea ${i+1}: la cantidad debe ser mayor a 0.`);
+        if (!(aNumero(l.unitCost) > 0)) errs.push(`Línea ${i+1}: el costo USD debe ser mayor a 0.`);
       });
     } else {
       if (!(parseInt(totalPieces) > 0)) errs.push("Ingresa el número de piezas.");
-      if (!(parseFloat(ticketCost) > 0)) errs.push("Ingresa el costo total del ticket.");
+      if (!(aNumero(ticketCost) > 0)) errs.push("Ingresa el costo total del ticket.");
     }
     if (errs.length) { setErrors(errs); return; }
     setErrors([]);
@@ -269,24 +279,24 @@ export function TicketDetail({ ticket, onBack, onNext }) {
       fechaTicket: fechaTicket || hoyISO(),
       lineas: lines,
       modoImpuesto: taxMode,
-      impuestoPct: parseFloat(taxPct) || 0,
-      impuestoFijo: parseFloat(taxFixed) || 0,
-      otrosGastosTicket: parseFloat(otherCosts)|| 0,
+      impuestoPct: aNumero(taxPct),
+      impuestoFijo: aNumero(taxFixed),
+      otrosGastosTicket: aNumero(otherCosts),
       totalPiezas: isLote
         ? (parseInt(totalPieces) || 0)
         : lines.reduce((a, l) => a + (parseInt(l.qty) || 0), 0),
-      costoTicket: isLote ? (parseFloat(ticketCost) || 0) : 0,
+      costoTicket: isLote ? aNumero(ticketCost) : 0,
       estado: "draft",
       // Compatibilidad
       lines,
       taxMode,
-      taxPct: parseFloat(taxPct) || 0,
-      taxFixed: parseFloat(taxFixed) || 0,
-      ticketOtherCosts: parseFloat(otherCosts)|| 0,
+      taxPct: aNumero(taxPct),
+      taxFixed: aNumero(taxFixed),
+      ticketOtherCosts: aNumero(otherCosts),
       totalPieces: isLote
         ? (parseInt(totalPieces) || 0)
         : lines.reduce((a, l) => a + (parseInt(l.qty) || 0), 0),
-      ticketCost: isLote ? (parseFloat(ticketCost) || 0) : 0,
+      ticketCost: isLote ? aNumero(ticketCost) : 0,
       status: "draft",
     };
 
@@ -480,14 +490,14 @@ export function TicketDetail({ ticket, onBack, onNext }) {
         </Card>
 
         {/* ── PREVIEW TOTAL ── */}
-        {(totalBase > 0 || (isLote && parseFloat(ticketCost) > 0)) && (
+        {(totalBase > 0 || (isLote && aNumero(ticketCost) > 0)) && (
           <Card style={{ marginBottom:16, background:C.okFade, borderLeft:`3px solid ${C.ok}`, padding:"14px" }}>
             <div style={{ fontSize:12, fontWeight:700, color:C.ok, marginBottom:10 }}>
               Vista previa del costo total
             </div>
             <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
               {[
-                ["Base del ticket",   `$${isLote ? (parseFloat(ticketCost)||0).toFixed(2) : totalBase.toFixed(2)} USD`],
+                ["Base del ticket",   `$${previewBase.toFixed(2)} USD`],
                 ["+ Otros gastos",    `$${previewOther.toFixed(2)} USD`],
                 ["+ Impuestos",       `$${previewTax.toFixed(2)} USD`],
               ].map(([l,v]) => (
@@ -503,7 +513,7 @@ export function TicketDetail({ ticket, onBack, onNext }) {
               <div style={{ display:"flex", justifyContent:"space-between" }}>
                 <span style={{ fontSize:12, color:C.muted }}>En MXN (TC: ${leer(ticket, "tipoCambio", "exchangeRate", STORE_CONFIG.exchangeRate)})</span>
                 <span style={{ fontSize:13, fontWeight:700, color:C.terra }}>
-                  ${(previewTotal * (parseFloat(leer(ticket, "tipoCambio", "exchangeRate", STORE_CONFIG.exchangeRate)) || STORE_CONFIG.exchangeRate)).toFixed(2)} MXN
+                  ${(previewTotal * (aNumero(leer(ticket, "tipoCambio", "exchangeRate", STORE_CONFIG.exchangeRate)) || STORE_CONFIG.exchangeRate)).toFixed(2)} MXN
                 </span>
               </div>
             </div>
