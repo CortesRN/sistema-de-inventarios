@@ -12,6 +12,22 @@ function fmt(n, dec=2) {
   return parts.join(".");
 }
 function mxn(n) { return "$ " + fmt(n, 2); }
+function terminoNatural(value) {
+  if (value === null || value === undefined) return "";
+  const raw = String(value).trim();
+  if (!raw) return "";
+
+  const conocidos = {
+    unisexo: "Unisex",
+    unisex: "Unisex",
+    boleto: "Ticket",
+    boletos: "Tickets",
+    ticket: "Ticket",
+    tickets: "Tickets",
+  };
+
+  return conocidos[raw.toLowerCase()] || raw;
+}
 
 // ─── ESTADO LEGIBLE ───────────────────────────────────────
 function infoEstado(estado, esProvisional) {
@@ -69,7 +85,7 @@ export function InventoryList({ items, onEdit, onBack }) {
     if (filtroCateg  !== "Todas"  && item.categoria !== filtroCateg)   return false;
     if (filtroMarca  !== "Todas"  && item.marca     !== filtroMarca)   return false;
     if (filtroTicket !== "Todos"  && item.ticketOrigen !== filtroTicket) return false;
-    if (filtroGenero !== "Todos"  && item.genero    !== filtroGenero)  return false;
+    if (filtroGenero !== "Todos"  && terminoNatural(item.genero) !== filtroGenero)  return false;
     switch (filtroExtra) {
       case "sin_foto":    if (item.foto)              return false; break;
       case "sin_precio":  if (item.precio > 0)        return false; break;
@@ -80,7 +96,7 @@ export function InventoryList({ items, onEdit, onBack }) {
     if (busqueda) {
       const q = busqueda.toLowerCase();
       return [item.clave, item.nombre, item.marca, item.talla,
-              item.color, item.ticketOrigen, item.descripcion, item.genero]
+              item.color, item.ticketOrigen, item.descripcion, terminoNatural(item.genero)]
         .some(v => v?.toLowerCase().includes(q));
     }
     return true;
@@ -348,8 +364,8 @@ export function InventoryList({ items, onEdit, onBack }) {
                   {item.nombre || "Sin nombre"}
                 </div>
 
-                <div style={{ fontSize:11, color:C.muted, marginTop:1 }}>
-                  {[item.marca, item.categoria, item.genero,
+                <div style={{ fontSize:11, color:C.muted, marginTop:1 }} translate="no">
+                  {[item.marca, item.categoria, terminoNatural(item.genero),
                     item.talla && "T:" + item.talla, item.color
                   ].filter(Boolean).join(" · ")}
                 </div>
@@ -414,12 +430,12 @@ export function EditInventoryItem({ item, onBack, onSaved }) {
   const [descripcion, setDescripcion] = useState(item.descripcion || "");
   const [talla,       setTalla]       = useState(item.talla       || "");
   const [color,       setColor]       = useState(item.color       || "");
-  const [genero,      setGenero]      = useState(item.genero      || "");
+  const [genero,      setGenero]      = useState(terminoNatural(item.genero) || "");
   const [foto,        setFoto]        = useState(item.foto        || "");
   const [precio,      setPrecio]      = useState(item.precio > 0 ? String(item.precio) : "");
   const [activo,      setActivo]      = useState(item.activo      || false);
   const [ubicacion,   setUbicacion]   = useState(item.ubicacion   || "usa");
-  const [fechaCompra, setFechaCompra] = useState(item.fechaCompra || item.fechaIngreso || "");
+  const [fechaCompra, setFechaCompra] = useState(item.fechaCompra || "");
   const [guardando,   setGuardando]   = useState(false);
   const [guardado,    setGuardado]    = useState(false);
 
@@ -438,7 +454,7 @@ export function EditInventoryItem({ item, onBack, onSaved }) {
       : "en_bodega";
 
     await dbUpdate(COL.inventario, item.id, {
-      nombre, categoria, marca, descripcion, talla, color, genero,
+      nombre, categoria, marca, descripcion, talla, color, genero: terminoNatural(genero),
       foto,
       precio:     precioNum,
       activo:     completo && precioNum > 0 ? activo : false,
@@ -475,10 +491,10 @@ export function EditInventoryItem({ item, onBack, onSaved }) {
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8 }}>
               {[
                 ["Costo USA",   `$${fmt(item.costoUSD||0,2)} USD`              ],
-                ["Flete",       `$${fmt(item.fletePorPrendaUSD||0,2)} USD`     ],
+                ["Costo Flete", `$${fmt(item.fletePorPrendaUSD||0,2)} USD`     ],
                 ["Total MXN",   mxn(costoMXN)                                  ],
               ].map(([l,v]) => (
-                <div key={l}>
+                <div key={l} translate="no">
                   <div style={{ fontSize:9, color:C.muted }}>{l}</div>
                   <div style={{ fontSize:12, fontWeight:700, color:C.black }}>{v}</div>
                 </div>
@@ -487,10 +503,10 @@ export function EditInventoryItem({ item, onBack, onSaved }) {
           ) : (
             <div>
               <div style={{ fontSize:9, color:C.muted }}>Costo MXN</div>
-              <div style={{ fontSize:14, fontWeight:700, color:C.black }}>{mxn(costoMXN)}</div>
+              <div style={{ fontSize:14, fontWeight:700, color:C.black }} translate="no">{mxn(costoMXN)}</div>
             </div>
           )}
-          <div style={{ fontSize:9, color:C.muted, marginTop:6 }}>
+          <div style={{ fontSize:10, color:C.muted, marginTop:6 }} translate="no">
             {item.origen === "usa" && `TC: $${fmt(item.tipoCambio||0,2)} · `}
             Ticket: {item.ticketOrigen || "—"}
           </div>
@@ -573,7 +589,7 @@ export function EditInventoryItem({ item, onBack, onSaved }) {
                 fontSize:11, outline:"none", background:C.white,
                 color:C.black, fontFamily:FONT.body }}>
               {["","Mujer","Hombre","Niño","Niña","Unisex"].map(g => (
-                <option key={g} value={g}>{g || "— —"}</option>
+                <option key={g} value={g} translate="no">{g || "— —"}</option>
               ))}
             </select>
           </div>

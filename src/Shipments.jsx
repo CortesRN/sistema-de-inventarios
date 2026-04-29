@@ -1,8 +1,14 @@
 import { useState, useEffect } from "react";
 import { C, FONT, Btn, Card, SectionTitle, TopBar, InfoBox, Loading, Badge, EmptyState } from "./ui.jsx";
 import { dbAdd, dbUpdate, dbGetAll, dbWhere, nextId, padId } from "./firebase.js";
-import { calcShipmentCost, applyShipmentCost, toMXN, round2 } from "./costing.js";
+import { calcShipmentCost, applyShipmentCost, toMXN } from "./costing.js";
 import { COL, FREIGHT, STORE_CONFIG } from "./config.js";
+
+function leer(doc, campoEs, campoEn, fallback = null) {
+  if (doc?.[campoEs] !== undefined) return doc[campoEs];
+  if (doc?.[campoEn] !== undefined) return doc[campoEn];
+  return fallback;
+}
 
 // ─── SHIPMENT LIST ────────────────────────────────────────
 export function ShipmentList({ onNew, onOpen, onBack }) {
@@ -74,7 +80,7 @@ export function NewShipment({ onBack, onCreated }) {
     // Cargar tickets que ya tienen costo pero aún no tienen envío
     dbGetAll(COL.tickets).then(all => {
       const available = all.filter(t =>
-        t.status === "costed" && !t.shipmentId
+        leer(t, "estado", "status", "draft") === "costed" && !t.shipmentId
       );
       setTickets(available);
       setLoading(false);
@@ -87,7 +93,7 @@ export function NewShipment({ onBack, onCreated }) {
 
   // Piezas totales de los tickets seleccionados
   const selectedTickets  = tickets.filter(t => selected.includes(t.id));
-  const totalSelectedPcs = selectedTickets.reduce((a, t) => a + (t.totalPieces || 0), 0);
+  const totalSelectedPcs = selectedTickets.reduce((a, t) => a + (leer(t, "totalPiezas", "totalPieces", 0) || 0), 0);
 
   function toggleTicket(id) {
     setSelected(s => s.includes(id) ? s.filter(x => x !== id) : [...s, id]);
@@ -127,7 +133,7 @@ export function NewShipment({ onBack, onCreated }) {
     // Marcar tickets como completos
     for (const t of selectedTickets) {
       await dbUpdate(COL.tickets, t.id, {
-        status:     "complete",
+        estado:     "complete",
         shipmentId: id,
       });
     }

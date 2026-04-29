@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { C, FONT, Btn, WaBtn, Inp, Card, SectionTitle, TopBar,
-         InfoBox, Badge, Loading, EmptyState, PinLock, StatsRow, OfflineBanner } from "./ui.jsx";
-import { initFirebase, dbAdd, dbUpdate, dbGetAll, dbListen } from "./firebase.js";
+         InfoBox, Badge, Loading, EmptyState, StatsRow, OfflineBanner } from "./ui.jsx";
+import { initFirebase, adminSignIn, adminSignOut, onAdminAuthChanged, dbAdd, dbUpdate, dbGetAll, dbWhere, dbListen } from "./firebase.js";
 import { TicketsScreen } from "./Tickets.jsx";
 import { ShipmentsScreen } from "./Shipments.jsx";
 import { InventoryScreen } from "./Inventory.jsx";
@@ -16,6 +16,13 @@ function numFmt(n,dec=2){
   return(num<0?"-":"")+intFmt+"."+frac;
 }
 function mxn(n,dec=2){return"$ "+numFmt(n,dec);}
+function terminoNatural(value){
+  if(value===null||value===undefined)return"";
+  const raw=String(value).trim();
+  if(!raw)return"";
+  const conocidos={unisexo:"Unisex",unisex:"Unisex",boleto:"Ticket",boletos:"Tickets",ticket:"Ticket",tickets:"Tickets"};
+  return conocidos[raw.toLowerCase()]||raw;
+}
 
 // ─── GPS ──────────────────────────────────────────────────
 function calcKm(la1,lo1,la2,lo2){
@@ -52,6 +59,61 @@ function FadeImg({src,alt}){
       {!ok&&<div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,color:C.muted,opacity:.2}}>▣</div>}
       {src&&<img src={optimImg(src)} alt={alt||""} onLoad={()=>setOk(true)} loading="lazy"
         style={{position:"absolute",inset:0,width:"100%",height:"100%",objectFit:"cover",opacity:ok?1:0,transition:"opacity .4s"}}/>}
+    </div>
+  );
+}
+
+function AdminAuthGate({ onReady }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit() {
+    if (!email.trim() || !password.trim()) return;
+    setBusy(true);
+    setError("");
+    try {
+      const cred = await adminSignIn(email.trim(), password);
+      const authEmail = String(cred.user?.email || "").toLowerCase();
+      const allowlist = STORE_CONFIG.adminEmails || [];
+      if (allowlist.length && !allowlist.includes(authEmail)) {
+        await adminSignOut();
+        throw new Error("Este correo no tiene permiso de administrador.");
+      }
+      onReady?.();
+    } catch (err) {
+      const code = err?.code || "";
+      const msg =
+        code === "auth/invalid-credential" ? "Correo o contrasena incorrectos." :
+        code === "auth/user-not-found" ? "Este usuario no existe en Firebase Auth." :
+        code === "auth/invalid-email" ? "El correo no es valido." :
+        code === "auth/too-many-requests" ? "Demasiados intentos. Espera un momento." :
+        err?.message || "No se pudo iniciar sesion.";
+      setError(msg);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div style={{background:C.cream,minHeight:"100%"}}>
+      <TopBar title="Admin" subtitle="Acceso con Firebase Auth"/>
+      <div style={{padding:"16px"}}>
+        <Card style={{padding:"18px",marginBottom:16}}>
+          <div style={{fontSize:18,fontWeight:900,color:C.black,fontFamily:FONT.display,marginBottom:8}}>Iniciar sesion</div>
+          <div style={{fontSize:13,color:C.muted,lineHeight:1.7,marginBottom:16}}>
+            Este acceso ya no usa PIN. En produccion deberas habilitar Email/Password en Firebase Auth y dar de alta solo los correos admin.
+          </div>
+          <Inp label="Correo admin" value={email} onChange={setEmail} placeholder="admin@casi.com" type="email"/>
+          <Inp label="Contrasena" value={password} onChange={setPassword} placeholder="Tu contrasena de Firebase" type="password"/>
+          {error && <InfoBox type="danger">{error}</InfoBox>}
+          <Btn label={busy ? "Entrando..." : "Entrar a Admin"} onClick={submit} disabled={busy || !email.trim() || !password.trim()}/>
+        </Card>
+        <InfoBox>
+          Correos permitidos: {STORE_CONFIG.adminEmails.length ? STORE_CONFIG.adminEmails.join(", ") : "sin lista definida aun"}
+        </InfoBox>
+      </div>
     </div>
   );
 }
@@ -113,26 +175,34 @@ function Checkout({carrito,zona,onBack,onConfirm}){
   const[referenciaPago,setReferenciaPago]=useState("");
   const[listo,setListo]=useState(false);
   const[guardando,setGuardando]=useState(false);
+  const[pedidoConfirmado,setPedidoConfirmado]=useState(null);
   const subtotal=carrito.reduce((a,i)=>a+(i.precio||0),0);
   const total=subtotal+(zona?.price||0);
-  const pedidoId="C-"+Date.now().toString().slice(-6);
   const puedeInfo=nombre.trim().length>2&&telefono.replace(/\D/g,"").length>=10;
   const puedePagar=metodoPago&&(metodoPago!=="transfer"||referenciaPago.length>3);
-  const pedido={id:pedidoId,carrito,zona,metodoPago,referenciaPago,total,status:metodoPago==="transfer"?"verificando":"nuevo",cliente:{nombre,telefono,referencia},createdAt:new Date().toISOString()};
-  async function confirmar(){if(!puedePagar)return;setGuardando(true);await onConfirm(pedido);setGuardando(false);setListo(true);}
+  async function confirmar(){
+    if(!puedePagar)return;
+    setGuardando(true);
+    const pedidoId="C-"+Date.now().toString().slice(-6);
+    const pedido={id:pedidoId,carrito,zona,metodoPago,referenciaPago,total,status:metodoPago==="transfer"?"verificando":"nuevo",cliente:{nombre,telefono,referencia},createdAt:new Date().toISOString()};
+    await onConfirm(pedido);
+    setPedidoConfirmado(pedido);
+    setGuardando(false);
+    setListo(true);
+  }
   if(listo)return(
     <div style={{padding:"0 20px 32px",background:C.cream,minHeight:"100%",textAlign:"center"}}>
       <div style={{padding:"48px 0 24px"}}>
         <div style={{fontSize:64,marginBottom:16}}>🎉</div>
         <div style={{fontSize:10,fontWeight:700,color:C.terra,letterSpacing:3,textTransform:"uppercase",marginBottom:8}}>Pedido confirmado</div>
         <div style={{fontSize:26,fontWeight:900,color:C.black,fontFamily:FONT.display,marginBottom:6,lineHeight:1.2}}>Todo listo,<br/>{nombre.split(" ")[0]}</div>
-        <div style={{fontSize:12,color:C.muted,marginBottom:24}}>Pedido #{pedidoId}</div>
+        <div style={{fontSize:12,color:C.muted,marginBottom:24}}>Pedido #{pedidoConfirmado?.id}</div>
         <Card style={{marginBottom:16,padding:"14px 20px",textAlign:"left"}}>
           <div style={{display:"flex",justifyContent:"space-between",marginBottom:8}}><span style={{fontSize:12,color:C.muted}}>Total</span><span style={{fontSize:18,fontWeight:900,color:C.sale}}>{mxn(total)} MXN</span></div>
           <div style={{fontSize:12,color:C.muted}}>📍 {zona?.name} · 📅 {zona?.days}</div>
         </Card>
         <InfoBox type="ok">✅ Guardado — el equipo CASI ya lo recibió</InfoBox>
-        <div style={{marginBottom:14}}><WaBtn tel={STORE_CONFIG.ownerPhone} msg={buildWaMsg(pedido)} label="Confirmar por WhatsApp"/></div>
+        <div style={{marginBottom:14}}><WaBtn tel={STORE_CONFIG.ownerPhone} msg={buildWaMsg(pedidoConfirmado)} label="Confirmar por WhatsApp"/></div>
         <button onClick={onBack} style={{fontSize:13,color:C.terra,background:"none",border:"none",cursor:"pointer",fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>← Seguir comprando</button>
       </div>
     </div>
@@ -240,8 +310,8 @@ function Store({onOrder}){
 
   // ── Cargar productos desde la colección "inventario"
   useEffect(()=>{
-    dbGetAll(COL.inventario,"createdAt","desc").then(items=>{
-      setProductos(items.filter(p=>p.activo===true));
+    dbWhere(COL.inventario,"activo","==",true).then(items=>{
+      setProductos(items);
       setCargando(false);
     }).catch(err=>{
       console.error("Error cargando inventario:",err);
@@ -249,12 +319,12 @@ function Store({onOrder}){
     });
   },[]);
 
-  useEffect(()=>{try{localStorage.setItem("casi:carrito",JSON.stringify(carrito));}catch{}},[carrito]);
-  useEffect(()=>{try{if(zona)localStorage.setItem("casi:zona",JSON.stringify(zona));}catch{}},[zona]);
+  useEffect(()=>{try{localStorage.setItem("casi:carrito",JSON.stringify(carrito));}catch{return;}},[carrito]);
+  useEffect(()=>{try{if(zona)localStorage.setItem("casi:zona",JSON.stringify(zona));}catch{return;}},[zona]);
 
   // ── Opciones de filtro del inventario real
   const opsCategorias=[...new Set(productos.map(p=>p.categoria).filter(Boolean).sort())];
-  const opsGeneros=[...new Set(productos.map(p=>p.genero).filter(Boolean).sort())];
+  const opsGeneros=[...new Set(productos.map(p=>terminoNatural(p.genero)).filter(Boolean).sort())];
   const precios=productos.map(p=>p.precio).filter(p=>typeof p==="number"&&p>0);
   const precioMax=precios.length?Math.ceil(precios.reduce((a,b)=>a>b?a:b,0)/200)*200:1000;
   const opsPrecio=[200,400,600,800,1000].filter(p=>p<=precioMax+200);
@@ -265,7 +335,7 @@ function Store({onOrder}){
   let visibles=productos.filter(p=>{
     if(busqueda&&!p.nombre?.toLowerCase().includes(busqueda.toLowerCase()))return false;
     if(fCategoria.length&&!fCategoria.includes(p.categoria))return false;
-    if(fGenero.length&&!fGenero.includes(p.genero))return false;
+    if(fGenero.length&&!fGenero.includes(terminoNatural(p.genero)))return false;
     if(fPrecioMax&&p.precio>fPrecioMax)return false;
     return true;
   });
@@ -313,7 +383,7 @@ function Store({onOrder}){
           <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:16}}>
             {productoSeleccionado.talla&&<span style={{padding:"6px 14px",background:"#f5f5f5",fontSize:12,fontWeight:900,color:C.black}}><span>Talla {productoSeleccionado.talla}</span></span>}
             {productoSeleccionado.categoria&&<span style={{padding:"6px 14px",background:"#f5f5f5",fontSize:12,color:C.muted}}><span>{productoSeleccionado.categoria}</span></span>}
-            {productoSeleccionado.genero&&<span style={{padding:"6px 14px",background:"#f5f5f5",fontSize:12,color:C.muted}}><span>{productoSeleccionado.genero}</span></span>}
+            {productoSeleccionado.genero&&<span style={{padding:"6px 14px",background:"#f5f5f5",fontSize:12,color:C.muted}}><span>{terminoNatural(productoSeleccionado.genero)}</span></span>}
             {productoSeleccionado.color&&<span style={{padding:"6px 14px",background:"#f5f5f5",fontSize:12,color:C.muted}}><span>{productoSeleccionado.color}</span></span>}
             {productoSeleccionado.marca&&<span style={{padding:"6px 14px",background:"#f5f5f5",fontSize:12,color:C.muted}}><span>{productoSeleccionado.marca}</span></span>}
           </div>
@@ -637,34 +707,23 @@ function Store({onOrder}){
 
 // ─── MIS PEDIDOS ──────────────────────────────────────────
 function MisPedidos({onBack}){
-  const[telefono,setTelefono]=useState("");
-  const[pedidos,setPedidos]=useState([]);
-  const[buscado,setBuscado]=useState(false);
-  const[cargando,setCargando]=useState(false);
-  async function buscar(){if(telefono.length<8)return;setCargando(true);const todos=await dbGetAll(COL.pedidos);setPedidos(todos.filter(o=>o.cliente?.telefono?.replace(/\D/g,"").includes(telefono.replace(/\D/g,""))));setBuscado(true);setCargando(false);}
   return(
     <div style={{background:C.cream,minHeight:"100%"}}>
-      <TopBar title="Mis pedidos" subtitle="Historial de compras" onBack={onBack}/>
+      <TopBar title="Mis pedidos" subtitle="Consulta segura de compras" onBack={onBack}/>
       <div style={{padding:"16px"}}>
         <Card style={{marginBottom:16,padding:"18px"}}>
-          <Inp label="Tu WhatsApp (10 dígitos)" value={telefono} onChange={setTelefono} placeholder="951 234 5678" type="tel"/>
-          <Btn label={cargando?"Buscando…":"Buscar mis pedidos"} onClick={buscar} disabled={telefono.length<8||cargando}/>
+          <div style={{fontSize:14,fontWeight:800,color:C.black,marginBottom:8}}>Esta consulta quedó desactivada temporalmente.</div>
+          <div style={{fontSize:13,color:C.muted,lineHeight:1.7,marginBottom:14}}>
+            Antes se revisaban todos los pedidos desde la app pública para buscar por teléfono. Eso no es seguro en producción porque expone información de clientes.
+          </div>
+          <div style={{fontSize:13,color:C.muted,lineHeight:1.7,marginBottom:14}}>
+            Mientras dejamos un seguimiento más seguro, usa WhatsApp y comparte tu nombre o número de pedido.
+          </div>
+          <WaBtn tel={STORE_CONFIG.ownerPhone} msg="Hola, quiero consultar el estado de mi pedido CASI." label="Consultar por WhatsApp"/>
         </Card>
-        {cargando&&<Loading message="Buscando…"/>}
-        {buscado&&!cargando&&pedidos.length===0&&<EmptyState icon="📭" title="Sin pedidos" sub="No encontramos pedidos con ese número"/>}
-        {pedidos.map((o,i)=>{
-          const s=ORDER_STATUS[o.status]||ORDER_STATUS.nuevo;
-          const articulos=o.carrito||[];
-          return(
-            <Card key={i} style={{marginBottom:12,borderLeft:`3px solid ${s.color}`}}>
-              <div style={{display:"flex",justifyContent:"space-between",marginBottom:10}}><div style={{fontSize:12,fontWeight:700,color:C.black}}>#{o.id}</div><span style={{fontSize:11,fontWeight:700,color:s.color}}>{s.e} {s.label}</span></div>
-              <div style={{fontSize:20,fontWeight:900,color:C.sale,marginBottom:6}}>{mxn(o.total)} MXN</div>
-              <div style={{fontSize:12,color:C.muted,marginBottom:4}}>📍 {o.zona?.name} · 📅 {o.zona?.days}</div>
-              {articulos.length>0&&<div style={{fontSize:12,color:C.muted,marginBottom:10}}>{articulos.slice(0,2).map(i=>i.nombre).join(", ")}{articulos.length>2?` +${articulos.length-2} más`:""}</div>}
-              <WaBtn tel={STORE_CONFIG.ownerPhone} msg={`Hola! Soy ${o.cliente?.nombre}. Pregunto por mi pedido CASI #${o.id} (${mxn(o.total)} MXN). ¿Cuándo llega?`} label="Preguntar por WhatsApp"/>
-            </Card>
-          );
-        })}
+        <InfoBox title="Siguiente paso recomendado">
+          Crear un seguimiento con código único por pedido para que cada cliente vea solo lo suyo, sin leer toda la colección de pedidos.
+        </InfoBox>
       </div>
     </div>
   );
@@ -911,27 +970,70 @@ function AppVendedor({onBack}){
 export default function App(){
   const[modo,setModo]=useState("store");
   const[tabAdmin,setTabAdmin]=useState("dashboard");
-  const[adminAbierto,setAdminAbierto]=useState(false);
   const[tabTienda,setTabTienda]=useState("store");
   const[pedidos,setPedidos]=useState([]);
   const[inventario,setInventario]=useState([]);
   const[fbOk,setFbOk]=useState(false);
   const[listo,setListo]=useState(false);
+  const[adminUser,setAdminUser]=useState(null);
+  const[authReady,setAuthReady]=useState(!STORE_CONFIG.adminAuthEnabled);
   const unsubRef=useRef(null);
 
   useEffect(()=>{
     const l=document.createElement("link");
     l.href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@700;800;900&family=DM+Sans:wght@400;500;600;700;800&display=swap";
     l.rel="stylesheet";document.head.appendChild(l);
-    initFirebase().then(async()=>{
+    initFirebase().then(()=>{
       setFbOk(true);
-      unsubRef.current=dbListen(COL.pedidos,data=>setPedidos(data));
-      const inv=await dbGetAll(COL.inventario,"createdAt","desc");
-      setInventario(inv);
       setListo(true);
     }).catch(()=>setListo(true));
     return()=>{if(unsubRef.current)unsubRef.current();};
   },[]);
+
+  useEffect(()=>{
+    if(!STORE_CONFIG.adminAuthEnabled){
+      return;
+    }
+    let off = () => {};
+    initFirebase()
+      .then(async()=>{
+        off = await onAdminAuthChanged(async user => {
+          if(!user){
+            setAdminUser(null);
+            setAuthReady(true);
+            return;
+          }
+          const email = String(user.email || "").toLowerCase();
+          const allowlist = STORE_CONFIG.adminEmails || [];
+          if(allowlist.length && !allowlist.includes(email)){
+            await adminSignOut();
+            setAdminUser(null);
+            setAuthReady(true);
+            return;
+          }
+          setAdminUser(user);
+          setAuthReady(true);
+        });
+      })
+      .catch(()=>{
+        setAdminUser(null);
+        setAuthReady(true);
+      });
+    return()=>off();
+  },[]);
+
+  useEffect(()=>{
+    if(unsubRef.current){
+      unsubRef.current();
+      unsubRef.current=null;
+    }
+    if(modo!=="admin" || (STORE_CONFIG.adminAuthEnabled && !adminUser)){
+      return;
+    }
+    unsubRef.current=dbListen(COL.pedidos,data=>setPedidos(data));
+    dbGetAll(COL.inventario,"createdAt","desc").then(setInventario).catch(()=>setInventario([]));
+    return()=>{if(unsubRef.current)unsubRef.current();};
+  },[modo,adminUser]);
 
   async function guardarPedido(pedido){try{await dbAdd(COL.pedidos,pedido);}catch(e){console.error(e);}}
   async function actualizarEstado(id,status){try{await dbUpdate(COL.pedidos,id,{status});}catch(e){console.error(e);}}
@@ -960,10 +1062,14 @@ export default function App(){
     if(modo==="driver")return<AppRepartidor onBack={()=>setModo("store")}/>;
     if(modo==="vendor")return<AppVendedor onBack={()=>setModo("store")}/>;
     if(modo==="admin"){
-      if(!adminAbierto)return<PinLock correct={STORE_CONFIG.adminPin} onUnlock={()=>setAdminAbierto(true)} title="Admin CASI"/>;
+      if(STORE_CONFIG.adminAuthEnabled && !authReady)return<Loading message="Preparando acceso admin..."/>;
+      if(STORE_CONFIG.adminAuthEnabled && !adminUser)return<AdminAuthGate onReady={()=>setTabAdmin("dashboard")}/>;
       if(tabAdmin==="dashboard")return<AdminDashboard pedidos={pedidos} inventario={inventario} onNav={t=>setTabAdmin(t)}/>;
       if(tabAdmin==="orders")return<AdminPedidos pedidos={pedidos} onActualizarEstado={actualizarEstado} onBack={()=>setTabAdmin("dashboard")}/>;
-      if(tabAdmin==="tickets")return<TicketsScreen onBack={()=>setTabAdmin("dashboard")}/>;
+      if(tabAdmin==="tickets")return<TicketsScreen
+          onBack={()=>setTabAdmin("dashboard")}
+          onRefresh={async()=>{const inv=await dbGetAll(COL.inventario,"createdAt","desc");setInventario(inv);}}
+        />;
       if(tabAdmin==="shipments")return<ShipmentsScreen onBack={()=>setTabAdmin("dashboard")}/>;
       if(tabAdmin==="inventory")return<InventoryScreen
           inventory={inventario}
@@ -976,27 +1082,35 @@ export default function App(){
   }
 
   return(
-    <div style={{minHeight:"100vh",background:"#111",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"20px 12px",fontFamily:FONT.body}}>
+    <div className="notranslate" translate="no" style={{minHeight:"100vh",background:"#111",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"20px 12px",fontFamily:FONT.body}}>
       <div style={{marginBottom:12,display:"flex",gap:6,flexWrap:"wrap",justifyContent:"center"}}>
         {MODOS.map(m=>(
-          <button key={m.id} onClick={()=>{setModo(m.id);if(m.id!=="admin")setAdminAbierto(false);if(m.id==="store")setTabTienda("store");}} style={{padding:"7px 14px",border:"none",cursor:"pointer",background:modo===m.id?C.terra:"rgba(255,255,255,0.1)",color:C.white,fontSize:12,fontWeight:700,letterSpacing:.5,boxShadow:modo===m.id?`0 4px 14px ${C.terra}55`:"none",transition:"all .2s"}}>{m.label}</button>
+          <button key={m.id} onClick={()=>{setModo(m.id);if(m.id==="store")setTabTienda("store");}} style={{padding:"7px 14px",border:"none",cursor:"pointer",background:modo===m.id?C.terra:"rgba(255,255,255,0.1)",color:C.white,fontSize:12,fontWeight:700,letterSpacing:.5,boxShadow:modo===m.id?`0 4px 14px ${C.terra}55`:"none",transition:"all .2s"}}>{m.label}</button>
         ))}
       </div>
-      <div style={{width:390,maxWidth:"100%",background:C.cream,overflow:"hidden",boxShadow:"0 60px 120px rgba(0,0,0,0.9),0 0 0 1px rgba(255,255,255,0.08)",display:"flex",flexDirection:"column",maxHeight:"90vh"}}>
+      <div className="notranslate" translate="no" style={{width:390,maxWidth:"100%",background:C.cream,overflow:"hidden",boxShadow:"0 60px 120px rgba(0,0,0,0.9),0 0 0 1px rgba(255,255,255,0.08)",display:"flex",flexDirection:"column",maxHeight:"90vh"}}>
         <OfflineBanner/>
         {fbOk&&<div style={{background:C.okFade,padding:"5px 14px",display:"flex",alignItems:"center",gap:8,borderBottom:`1px solid ${C.border}`}}>
           <div style={{width:7,height:7,borderRadius:"50%",background:C.ok,animation:"pulse 2s infinite"}}/>
           <span style={{fontSize:10,color:C.ok,fontWeight:700,letterSpacing:1}}>FIREBASE · EN VIVO</span>
           <style>{`@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}`}</style>
         </div>}
-        {modo==="admin"&&adminAbierto&&(
+        {modo==="admin"&&(
           <div style={{background:C.white,borderBottom:`1px solid ${C.border}`,display:"flex",overflowX:"auto",scrollbarWidth:"none",flexShrink:0}}>
             {TABS_ADMIN.map(t=>(
               <button key={t.id} onClick={()=>setTabAdmin(t.id)} style={{padding:"10px 11px",background:"none",border:"none",cursor:"pointer",fontSize:11,fontWeight:tabAdmin===t.id?700:500,color:tabAdmin===t.id?C.terra:C.muted,borderBottom:`2px solid ${tabAdmin===t.id?C.terra:"transparent"}`,transition:"all .2s",whiteSpace:"nowrap",flexShrink:0}}>{t.label}</button>
             ))}
+            {STORE_CONFIG.adminAuthEnabled && adminUser && (
+              <button
+                onClick={async()=>{await adminSignOut(); setTabAdmin("dashboard");}}
+                style={{marginLeft:"auto",padding:"10px 11px",background:"none",border:"none",cursor:"pointer",fontSize:11,fontWeight:700,color:C.danger,whiteSpace:"nowrap",flexShrink:0}}
+              >
+                Salir
+              </button>
+            )}
           </div>
         )}
-        <div style={{flex:1,overflowY:"auto",background:C.cream}}>
+        <div className="notranslate" translate="no" style={{flex:1,overflowY:"auto",background:C.cream}}>
           {renderContenido()}
         </div>
         {modo==="store"&&(
@@ -1011,7 +1125,7 @@ export default function App(){
         )}
       </div>
       <div style={{marginTop:12,fontSize:10,color:"rgba(255,255,255,0.2)",textAlign:"center",lineHeight:2,letterSpacing:1}}>
-        CASI · SIERRA SUR, OAXACA · FIREBASE EN VIVO<br/>ADMIN PIN: {STORE_CONFIG.adminPin}
+        CASI · SIERRA SUR, OAXACA · FIREBASE EN VIVO
       </div>
     </div>
   );

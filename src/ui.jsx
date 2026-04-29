@@ -61,7 +61,7 @@ export function WaBtn({ tel, msg, label, small }) {
   );
 }
 
-export function Inp({ label, value, onChange, placeholder, type="text", hint, required, small, readOnly }) {
+export function Inp({ label, value, onChange, placeholder, type="text", inputMode, step, hint, required, small, readOnly }) {
   return (
     <div style={{ marginBottom: small ? 10 : 16 }}>
       {label && (
@@ -71,6 +71,8 @@ export function Inp({ label, value, onChange, placeholder, type="text", hint, re
       )}
       <input
         type={type} value={value}
+        inputMode={inputMode}
+        step={step}
         onChange={e => !readOnly && onChange && onChange(e.target.value)}
         placeholder={placeholder} readOnly={readOnly}
         style={{
@@ -83,6 +85,38 @@ export function Inp({ label, value, onChange, placeholder, type="text", hint, re
         }}
       />
       {hint && <div style={{ fontSize:11, color:C.muted, marginTop:4 }}>{hint}</div>}
+    </div>
+  );
+}
+
+export function HelpTip({ text, title="Ayuda" }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div style={{ position:"relative", display:"inline-flex", alignItems:"center" }}>
+      <button
+        type="button"
+        onClick={() => setOpen(v => !v)}
+        style={{
+          width:20, height:20, borderRadius:"50%",
+          border:`1px solid ${C.border}`, background:C.white,
+          color:C.muted, fontSize:11, fontWeight:800, cursor:"pointer",
+          display:"flex", alignItems:"center", justifyContent:"center",
+          padding:0, lineHeight:1,
+        }}
+        aria-label={title}
+      >
+        ?
+      </button>
+      {open && (
+        <div style={{
+          position:"absolute", top:"calc(100% + 8px)", right:0, zIndex:40,
+          width:220, background:C.white, border:`1px solid ${C.border}`,
+          boxShadow:"0 8px 24px rgba(0,0,0,0.12)", padding:"10px 12px",
+        }}>
+          <div style={{ fontSize:11, fontWeight:700, color:C.black, marginBottom:4 }}>{title}</div>
+          <div style={{ fontSize:11, color:C.muted, lineHeight:1.5 }}>{text}</div>
+        </div>
+      )}
     </div>
   );
 }
@@ -218,7 +252,7 @@ export function EmptyState({ icon, title, sub }) {
   );
 }
 
-// ─── PIN LOCK ─────────────────────────────────────────────
+// ─── PIN LOCK Lo dejé por si lo uso despues─────────────────────────────────────────────
 export function PinLock({ correct, onUnlock, title="Acceso" }) {
   const [pin,   setPin]   = useState("");
   const [err,   setErr]   = useState(false);
