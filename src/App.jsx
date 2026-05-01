@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { C, FONT, Btn, WaBtn, Inp, Card, SectionTitle, TopBar,
-         InfoBox, Badge, Loading, EmptyState, PinLock, StatsRow, OfflineBanner } from "./ui.jsx";
-import { initFirebase, dbAdd, dbUpdate, dbGetAll, dbListen } from "./firebase.js";
+         InfoBox, Badge, Loading, EmptyState, StatsRow, OfflineBanner } from "./ui.jsx";
+import { initFirebase, adminSignIn, adminSignOut, onAdminAuthChanged, dbAdd, dbCreate, dbGet, dbUpdate, dbGetAll, dbWhere, dbListen, nextId, padId } from "./firebase.js";
 import { TicketsScreen } from "./Tickets.jsx";
 import { ShipmentsScreen } from "./Shipments.jsx";
 import { InventoryScreen } from "./Inventory.jsx";
@@ -16,6 +16,20 @@ function numFmt(n,dec=2){
   return(num<0?"-":"")+intFmt+"."+frac;
 }
 function mxn(n,dec=2){return"$ "+numFmt(n,dec);}
+function terminoNatural(value){
+  if(value===null||value===undefined)return"";
+  const raw=String(value).trim();
+  if(!raw)return"";
+  const conocidos={unisexo:"Unisex",unisex:"Unisex",boleto:"Ticket",boletos:"Tickets",ticket:"Ticket",tickets:"Tickets"};
+  return conocidos[raw.toLowerCase()]||raw;
+}
+
+function estadoDisponibleDesdeProducto(item){
+  const datosBaseCompletos = Boolean(item?.nombre && item?.foto && item?.color);
+  const completo = Boolean(datosBaseCompletos && (Number(item?.precio) || 0) > 0);
+  if (!completo || item?.esProvisional) return { estado:"en_bodega", activo:false };
+  return { estado:"en_venta", activo:true };
+}
 
 // ─── GPS ──────────────────────────────────────────────────
 function calcKm(la1,lo1,la2,lo2){
@@ -52,6 +66,61 @@ function FadeImg({src,alt}){
       {!ok&&<div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,color:C.muted,opacity:.2}}>▣</div>}
       {src&&<img src={optimImg(src)} alt={alt||""} onLoad={()=>setOk(true)} loading="lazy"
         style={{position:"absolute",inset:0,width:"100%",height:"100%",objectFit:"cover",opacity:ok?1:0,transition:"opacity .4s"}}/>}
+    </div>
+  );
+}
+
+function AdminAuthGate({ onReady }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit() {
+    if (!email.trim() || !password.trim()) return;
+    setBusy(true);
+    setError("");
+    try {
+      const cred = await adminSignIn(email.trim(), password);
+      const authEmail = String(cred.user?.email || "").toLowerCase();
+      const allowlist = STORE_CONFIG.adminEmails || [];
+      if (allowlist.length && !allowlist.includes(authEmail)) {
+        await adminSignOut();
+        throw new Error("Este correo no tiene permiso de administrador.");
+      }
+      onReady?.();
+    } catch (err) {
+      const code = err?.code || "";
+      const msg =
+        code === "auth/invalid-credential" ? "Correo o contrasena incorrectos." :
+        code === "auth/user-not-found" ? "Este usuario no existe en Firebase Auth." :
+        code === "auth/invalid-email" ? "El correo no es valido." :
+        code === "auth/too-many-requests" ? "Demasiados intentos. Espera un momento." :
+        err?.message || "No se pudo iniciar sesion.";
+      setError(msg);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div style={{background:C.cream,minHeight:"100%"}}>
+      <TopBar title="Admin" subtitle="Acceso con Firebase Auth"/>
+      <div style={{padding:"16px"}}>
+        <Card style={{padding:"18px",marginBottom:16}}>
+          <div style={{fontSize:18,fontWeight:900,color:C.black,fontFamily:FONT.display,marginBottom:8}}>Iniciar sesion</div>
+          <div style={{fontSize:13,color:C.muted,lineHeight:1.7,marginBottom:16}}>
+            Este acceso ya no usa PIN. En produccion deberas habilitar Email/Password en Firebase Auth y dar de alta solo los correos admin.
+          </div>
+          <Inp label="Correo admin" value={email} onChange={setEmail} placeholder="admin@casi.com" type="email"/>
+          <Inp label="Contrasena" value={password} onChange={setPassword} placeholder="Tu contrasena de Firebase" type="password"/>
+          {error && <InfoBox type="danger">{error}</InfoBox>}
+          <Btn label={busy ? "Entrando..." : "Entrar a Admin"} onClick={submit} disabled={busy || !email.trim() || !password.trim()}/>
+        </Card>
+        <InfoBox>
+          Correos permitidos: {STORE_CONFIG.adminEmails.length ? STORE_CONFIG.adminEmails.join(", ") : "sin lista definida aun"}
+        </InfoBox>
+      </div>
     </div>
   );
 }
@@ -113,26 +182,34 @@ function Checkout({carrito,zona,onBack,onConfirm}){
   const[referenciaPago,setReferenciaPago]=useState("");
   const[listo,setListo]=useState(false);
   const[guardando,setGuardando]=useState(false);
+  const[pedidoConfirmado,setPedidoConfirmado]=useState(null);
   const subtotal=carrito.reduce((a,i)=>a+(i.precio||0),0);
   const total=subtotal+(zona?.price||0);
-  const pedidoId="C-"+Date.now().toString().slice(-6);
   const puedeInfo=nombre.trim().length>2&&telefono.replace(/\D/g,"").length>=10;
   const puedePagar=metodoPago&&(metodoPago!=="transfer"||referenciaPago.length>3);
-  const pedido={id:pedidoId,carrito,zona,metodoPago,referenciaPago,total,status:metodoPago==="transfer"?"verificando":"nuevo",cliente:{nombre,telefono,referencia},createdAt:new Date().toISOString()};
-  async function confirmar(){if(!puedePagar)return;setGuardando(true);await onConfirm(pedido);setGuardando(false);setListo(true);}
+  async function confirmar(){
+    if(!puedePagar)return;
+    setGuardando(true);
+    const pedidoId="C-"+Date.now().toString().slice(-6);
+    const pedido={id:pedidoId,carrito,zona,metodoPago,referenciaPago,total,status:metodoPago==="transfer"?"verificando":"nuevo",cliente:{nombre,telefono,referencia},createdAt:new Date().toISOString()};
+    await onConfirm(pedido);
+    setPedidoConfirmado(pedido);
+    setGuardando(false);
+    setListo(true);
+  }
   if(listo)return(
     <div style={{padding:"0 20px 32px",background:C.cream,minHeight:"100%",textAlign:"center"}}>
       <div style={{padding:"48px 0 24px"}}>
         <div style={{fontSize:64,marginBottom:16}}>🎉</div>
         <div style={{fontSize:10,fontWeight:700,color:C.terra,letterSpacing:3,textTransform:"uppercase",marginBottom:8}}>Pedido confirmado</div>
         <div style={{fontSize:26,fontWeight:900,color:C.black,fontFamily:FONT.display,marginBottom:6,lineHeight:1.2}}>Todo listo,<br/>{nombre.split(" ")[0]}</div>
-        <div style={{fontSize:12,color:C.muted,marginBottom:24}}>Pedido #{pedidoId}</div>
+        <div style={{fontSize:12,color:C.muted,marginBottom:24}}>Pedido #{pedidoConfirmado?.id}</div>
         <Card style={{marginBottom:16,padding:"14px 20px",textAlign:"left"}}>
           <div style={{display:"flex",justifyContent:"space-between",marginBottom:8}}><span style={{fontSize:12,color:C.muted}}>Total</span><span style={{fontSize:18,fontWeight:900,color:C.sale}}>{mxn(total)} MXN</span></div>
           <div style={{fontSize:12,color:C.muted}}>📍 {zona?.name} · 📅 {zona?.days}</div>
         </Card>
         <InfoBox type="ok">✅ Guardado — el equipo CASI ya lo recibió</InfoBox>
-        <div style={{marginBottom:14}}><WaBtn tel={STORE_CONFIG.ownerPhone} msg={buildWaMsg(pedido)} label="Confirmar por WhatsApp"/></div>
+        <div style={{marginBottom:14}}><WaBtn tel={STORE_CONFIG.ownerPhone} msg={buildWaMsg(pedidoConfirmado)} label="Confirmar por WhatsApp"/></div>
         <button onClick={onBack} style={{fontSize:13,color:C.terra,background:"none",border:"none",cursor:"pointer",fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>← Seguir comprando</button>
       </div>
     </div>
@@ -240,8 +317,8 @@ function Store({onOrder}){
 
   // ── Cargar productos desde la colección "inventario"
   useEffect(()=>{
-    dbGetAll(COL.inventario,"createdAt","desc").then(items=>{
-      setProductos(items.filter(p=>p.activo===true));
+    dbWhere(COL.inventario,"activo","==",true).then(items=>{
+      setProductos(items);
       setCargando(false);
     }).catch(err=>{
       console.error("Error cargando inventario:",err);
@@ -249,12 +326,12 @@ function Store({onOrder}){
     });
   },[]);
 
-  useEffect(()=>{try{localStorage.setItem("casi:carrito",JSON.stringify(carrito));}catch{}},[carrito]);
-  useEffect(()=>{try{if(zona)localStorage.setItem("casi:zona",JSON.stringify(zona));}catch{}},[zona]);
+  useEffect(()=>{try{localStorage.setItem("casi:carrito",JSON.stringify(carrito));}catch{return;}},[carrito]);
+  useEffect(()=>{try{if(zona)localStorage.setItem("casi:zona",JSON.stringify(zona));}catch{return;}},[zona]);
 
   // ── Opciones de filtro del inventario real
   const opsCategorias=[...new Set(productos.map(p=>p.categoria).filter(Boolean).sort())];
-  const opsGeneros=[...new Set(productos.map(p=>p.genero).filter(Boolean).sort())];
+  const opsGeneros=[...new Set(productos.map(p=>terminoNatural(p.genero)).filter(Boolean).sort())];
   const precios=productos.map(p=>p.precio).filter(p=>typeof p==="number"&&p>0);
   const precioMax=precios.length?Math.ceil(precios.reduce((a,b)=>a>b?a:b,0)/200)*200:1000;
   const opsPrecio=[200,400,600,800,1000].filter(p=>p<=precioMax+200);
@@ -265,7 +342,7 @@ function Store({onOrder}){
   let visibles=productos.filter(p=>{
     if(busqueda&&!p.nombre?.toLowerCase().includes(busqueda.toLowerCase()))return false;
     if(fCategoria.length&&!fCategoria.includes(p.categoria))return false;
-    if(fGenero.length&&!fGenero.includes(p.genero))return false;
+    if(fGenero.length&&!fGenero.includes(terminoNatural(p.genero)))return false;
     if(fPrecioMax&&p.precio>fPrecioMax)return false;
     return true;
   });
@@ -313,7 +390,7 @@ function Store({onOrder}){
           <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:16}}>
             {productoSeleccionado.talla&&<span style={{padding:"6px 14px",background:"#f5f5f5",fontSize:12,fontWeight:900,color:C.black}}><span>Talla {productoSeleccionado.talla}</span></span>}
             {productoSeleccionado.categoria&&<span style={{padding:"6px 14px",background:"#f5f5f5",fontSize:12,color:C.muted}}><span>{productoSeleccionado.categoria}</span></span>}
-            {productoSeleccionado.genero&&<span style={{padding:"6px 14px",background:"#f5f5f5",fontSize:12,color:C.muted}}><span>{productoSeleccionado.genero}</span></span>}
+            {productoSeleccionado.genero&&<span style={{padding:"6px 14px",background:"#f5f5f5",fontSize:12,color:C.muted}}><span>{terminoNatural(productoSeleccionado.genero)}</span></span>}
             {productoSeleccionado.color&&<span style={{padding:"6px 14px",background:"#f5f5f5",fontSize:12,color:C.muted}}><span>{productoSeleccionado.color}</span></span>}
             {productoSeleccionado.marca&&<span style={{padding:"6px 14px",background:"#f5f5f5",fontSize:12,color:C.muted}}><span>{productoSeleccionado.marca}</span></span>}
           </div>
@@ -637,34 +714,23 @@ function Store({onOrder}){
 
 // ─── MIS PEDIDOS ──────────────────────────────────────────
 function MisPedidos({onBack}){
-  const[telefono,setTelefono]=useState("");
-  const[pedidos,setPedidos]=useState([]);
-  const[buscado,setBuscado]=useState(false);
-  const[cargando,setCargando]=useState(false);
-  async function buscar(){if(telefono.length<8)return;setCargando(true);const todos=await dbGetAll(COL.pedidos);setPedidos(todos.filter(o=>o.cliente?.telefono?.replace(/\D/g,"").includes(telefono.replace(/\D/g,""))));setBuscado(true);setCargando(false);}
   return(
     <div style={{background:C.cream,minHeight:"100%"}}>
-      <TopBar title="Mis pedidos" subtitle="Historial de compras" onBack={onBack}/>
+      <TopBar title="Mis pedidos" subtitle="Consulta segura de compras" onBack={onBack}/>
       <div style={{padding:"16px"}}>
         <Card style={{marginBottom:16,padding:"18px"}}>
-          <Inp label="Tu WhatsApp (10 dígitos)" value={telefono} onChange={setTelefono} placeholder="951 234 5678" type="tel"/>
-          <Btn label={cargando?"Buscando…":"Buscar mis pedidos"} onClick={buscar} disabled={telefono.length<8||cargando}/>
+          <div style={{fontSize:14,fontWeight:800,color:C.black,marginBottom:8}}>Esta consulta quedó desactivada temporalmente.</div>
+          <div style={{fontSize:13,color:C.muted,lineHeight:1.7,marginBottom:14}}>
+            Antes se revisaban todos los pedidos desde la app pública para buscar por teléfono. Eso no es seguro en producción porque expone información de clientes.
+          </div>
+          <div style={{fontSize:13,color:C.muted,lineHeight:1.7,marginBottom:14}}>
+            Mientras dejamos un seguimiento más seguro, usa WhatsApp y comparte tu nombre o número de pedido.
+          </div>
+          <WaBtn tel={STORE_CONFIG.ownerPhone} msg="Hola, quiero consultar el estado de mi pedido CASI." label="Consultar por WhatsApp"/>
         </Card>
-        {cargando&&<Loading message="Buscando…"/>}
-        {buscado&&!cargando&&pedidos.length===0&&<EmptyState icon="📭" title="Sin pedidos" sub="No encontramos pedidos con ese número"/>}
-        {pedidos.map((o,i)=>{
-          const s=ORDER_STATUS[o.status]||ORDER_STATUS.nuevo;
-          const articulos=o.carrito||[];
-          return(
-            <Card key={i} style={{marginBottom:12,borderLeft:`3px solid ${s.color}`}}>
-              <div style={{display:"flex",justifyContent:"space-between",marginBottom:10}}><div style={{fontSize:12,fontWeight:700,color:C.black}}>#{o.id}</div><span style={{fontSize:11,fontWeight:700,color:s.color}}>{s.e} {s.label}</span></div>
-              <div style={{fontSize:20,fontWeight:900,color:C.sale,marginBottom:6}}>{mxn(o.total)} MXN</div>
-              <div style={{fontSize:12,color:C.muted,marginBottom:4}}>📍 {o.zona?.name} · 📅 {o.zona?.days}</div>
-              {articulos.length>0&&<div style={{fontSize:12,color:C.muted,marginBottom:10}}>{articulos.slice(0,2).map(i=>i.nombre).join(", ")}{articulos.length>2?` +${articulos.length-2} más`:""}</div>}
-              <WaBtn tel={STORE_CONFIG.ownerPhone} msg={`Hola! Soy ${o.cliente?.nombre}. Pregunto por mi pedido CASI #${o.id} (${mxn(o.total)} MXN). ¿Cuándo llega?`} label="Preguntar por WhatsApp"/>
-            </Card>
-          );
-        })}
+        <InfoBox title="Siguiente paso recomendado">
+          Crear un seguimiento con código único por pedido para que cada cliente vea solo lo suyo, sin leer toda la colección de pedidos.
+        </InfoBox>
       </div>
     </div>
   );
@@ -726,6 +792,294 @@ function AdminDashboard({pedidos,inventario,onNav}){
           </Card>
         );
       })}
+    </div>
+  );
+}
+
+function ReportsScreen({ ventas, inventario, onBack }) {
+  const [rango, setRango] = useState("30d");
+  const hoy = new Date();
+  const hoyIso = hoy.toISOString().slice(0, 10);
+  const desde7 = new Date(hoy); desde7.setDate(desde7.getDate() - 7);
+  const desde30 = new Date(hoy); desde30.setDate(desde30.getDate() - 30);
+
+  const ventasFiltradas = ventas.filter(v => {
+    const fecha = String(v.fechaVenta || v.createdAt || "").slice(0, 10);
+    if (!fecha) return false;
+    if (rango === "hoy") return fecha === hoyIso;
+    if (rango === "7d") return fecha >= desde7.toISOString().slice(0, 10);
+    if (rango === "30d") return fecha >= desde30.toISOString().slice(0, 10);
+    return true;
+  });
+
+  const lineasVenta = ventasFiltradas.flatMap(venta => {
+    if (Array.isArray(venta.items) && venta.items.length) {
+      return venta.items.map(item => ({
+        ...item,
+        ventaId: venta.ventaId || venta.id,
+        fechaVenta: venta.fechaVenta || venta.createdAt,
+        canalVenta: venta.canalVenta,
+        metodoPago: venta.metodoPago,
+        vendedor: venta.vendedor,
+        cliente: venta.cliente,
+      }));
+    }
+    return [{
+      ...venta,
+      ventaId: venta.ventaId || venta.id,
+      precioVenta: Number(venta.precioVenta) || 0,
+      utilidad: Number(venta.utilidad) || 0,
+    }];
+  });
+
+  const totalVentas = lineasVenta.reduce((acc, v) => acc + (Number(v.precioVenta) || 0), 0);
+  const totalUtilidad = lineasVenta.reduce((acc, v) => acc + (Number(v.utilidad) || 0), 0);
+  const piezasVendidas = lineasVenta.length;
+  const ticketPromedio = piezasVendidas ? totalVentas / piezasVendidas : 0;
+  const margenPromedio = totalVentas > 0 ? (totalUtilidad / totalVentas) * 100 : 0;
+  const disponibles = inventario.filter(p => p.estado === "disponible").length;
+  const enVenta = inventario.filter(p => p.estado === "en_venta").length;
+  const enBodega = inventario.filter(p => p.estado === "en_bodega").length;
+  const reservados = inventario.filter(p => p.estado === "reservado").length;
+  const vendidos = inventario.filter(p => p.estado === "vendido").length;
+  const provisionales = inventario.filter(p => p.esProvisional).length;
+
+  const ventasPorCanal = Object.entries(
+    lineasVenta.reduce((acc, venta) => {
+      const key = venta.canalVenta || "sin_canal";
+      acc[key] = (acc[key] || 0) + (Number(venta.precioVenta) || 0);
+      return acc;
+    }, {})
+  ).sort((a, b) => b[1] - a[1]);
+
+  const ventasPorMetodo = Object.entries(
+    lineasVenta.reduce((acc, venta) => {
+      const key = venta.metodoPago || "sin_metodo";
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, {})
+  ).sort((a, b) => b[1] - a[1]);
+
+  const topProductos = Object.entries(
+    lineasVenta.reduce((acc, venta) => {
+      const key = venta.nombre || "Producto sin nombre";
+      acc[key] = acc[key] || { nombre:key, piezas:0, ventas:0 };
+      acc[key].piezas += 1;
+      acc[key].ventas += Number(venta.precioVenta) || 0;
+      return acc;
+    }, {})
+  ).map(([, value]) => value).sort((a, b) => b.ventas - a.ventas).slice(0, 5);
+
+  const rangoLabel = (
+    rango === "hoy" ? "Hoy" :
+    rango === "7d" ? "Ultimos 7 dias" :
+    rango === "30d" ? "Ultimos 30 dias" :
+    "Historico completo"
+  );
+
+  return (
+    <div style={{background:C.cream,minHeight:"100%"}}>
+      <TopBar title="Reportes" subtitle="Ventas e inventario" onBack={onBack}/>
+      <div style={{padding:"0 16px 32px"}}>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap",paddingTop:14,marginBottom:14}}>
+          {[{id:"hoy",label:"Hoy"},{id:"7d",label:"7 dias"},{id:"30d",label:"30 dias"},{id:"todo",label:"Todo"}].map(op => (
+            <button key={op.id} onClick={() => setRango(op.id)} style={{
+              padding:"8px 12px", border:"none", cursor:"pointer",
+              background:rango===op.id?C.black:C.white,
+              color:rango===op.id?C.white:C.muted,
+              fontSize:11, fontWeight:700, letterSpacing:.5, textTransform:"uppercase",
+            }}>
+              {op.label}
+            </button>
+          ))}
+        </div>
+
+        <Card style={{marginBottom:16,background:C.stone,padding:"12px 14px"}}>
+          <div style={{fontSize:10,fontWeight:700,color:C.muted,letterSpacing:1.5,textTransform:"uppercase",marginBottom:4}}>
+            Rango activo
+          </div>
+          <div style={{fontSize:16,fontWeight:800,color:C.black,marginBottom:2}}>
+            {rangoLabel}
+          </div>
+          <div style={{fontSize:11,color:C.muted}}>
+            {ventasFiltradas.length} operacion(es) · {lineasVenta.length} pieza(s) registradas en este periodo.
+          </div>
+        </Card>
+
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:18}}>
+          {[ 
+            {e:"💰", l:"Ventas", v:mxn(totalVentas), c:C.terra},
+            {e:"📈", l:"Utilidad", v:mxn(totalUtilidad), c:C.ok},
+            {e:"🏷️", l:"Piezas vendidas", v:piezasVendidas, c:C.purple},
+            {e:"🧾", l:"Promedio", v:mxn(ticketPromedio), c:C.info},
+          ].map(s => (
+            <Card key={s.l} style={{borderLeft:`3px solid ${s.c}`,padding:12}}>
+              <div style={{fontSize:20}}>{s.e}</div>
+              <div style={{fontSize:20,fontWeight:900,color:C.black,fontFamily:FONT.display,marginTop:4}}>{s.v}</div>
+              <div style={{fontSize:11,color:C.muted}}>{s.l}</div>
+            </Card>
+          ))}
+        </div>
+
+        <Card style={{marginBottom:18,padding:"12px 14px",borderLeft:`3px solid ${C.ok}`}}>
+          <div style={{fontSize:10,fontWeight:700,color:C.muted,letterSpacing:1.5,textTransform:"uppercase",marginBottom:4}}>
+            Margen promedio estimado
+          </div>
+          <div style={{fontSize:22,fontWeight:900,color:C.ok,fontFamily:FONT.display}}>
+            {margenPromedio.toFixed(1)}%
+          </div>
+          <div style={{fontSize:11,color:C.muted,marginTop:2}}>
+            Se calcula con la utilidad registrada sobre el total vendido del rango.
+          </div>
+        </Card>
+
+        <SectionTitle>Inventario actual</SectionTitle>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10,marginBottom:18}}>
+          {[
+            {l:"Disponibles", v:disponibles, c:"#0F766E"},
+            {l:"En venta", v:enVenta, c:C.ok},
+            {l:"Vendidos", v:vendidos, c:C.purple},
+            {l:"En bodega", v:enBodega, c:C.info},
+            {l:"Reservados", v:reservados, c:C.warn},
+          ].map(s => (
+            <Card key={s.l} style={{padding:12}}>
+              <div style={{fontSize:18,fontWeight:900,color:s.c}}>{s.v}</div>
+              <div style={{fontSize:11,color:C.muted}}>{s.l}</div>
+            </Card>
+          ))}
+        </div>
+
+        <Card style={{marginBottom:18,padding:"12px 14px",borderLeft:`3px solid ${C.terra}`,background:C.terraL}}>
+          <div style={{fontSize:10,fontWeight:700,color:C.terraD,letterSpacing:1.5,textTransform:"uppercase",marginBottom:4}}>
+            Alerta de costeo
+          </div>
+          <div style={{fontSize:18,fontWeight:900,color:C.terra}}>
+            {provisionales} provisional{provisionales !== 1 ? "es" : ""}
+          </div>
+          <div style={{fontSize:11,color:C.muted,marginTop:4,lineHeight:1.6}}>
+            Esta cantidad no es extra. Los productos provisionales ya están incluidos dentro de <strong>En bodega</strong> o del estado que les corresponda; aquí solo se muestran como alerta porque aún no tienen costo final de envío.
+          </div>
+        </Card>
+
+        <SectionTitle>Canales y pagos</SectionTitle>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:18}}>
+          <Card style={{padding:12}}>
+            <div style={{fontSize:11,fontWeight:700,color:C.black,marginBottom:8}}>Ventas por canal</div>
+            {ventasPorCanal.length === 0 && <div style={{fontSize:11,color:C.muted}}>Sin datos en este rango.</div>}
+            {ventasPorCanal.slice(0, 5).map(([canal, monto]) => (
+              <div key={canal} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:`1px solid ${C.border}`}}>
+                <span style={{fontSize:11,color:C.black}}>{canal}</span>
+                <span style={{fontSize:11,fontWeight:700,color:C.terra}}>{mxn(monto)}</span>
+              </div>
+            ))}
+          </Card>
+          <Card style={{padding:12}}>
+            <div style={{fontSize:11,fontWeight:700,color:C.black,marginBottom:8}}>Metodos de pago</div>
+            {ventasPorMetodo.length === 0 && <div style={{fontSize:11,color:C.muted}}>Sin datos en este rango.</div>}
+            {ventasPorMetodo.slice(0, 5).map(([metodo, total]) => (
+              <div key={metodo} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:`1px solid ${C.border}`}}>
+                <span style={{fontSize:11,color:C.black}}>{metodo}</span>
+                <span style={{fontSize:11,fontWeight:700,color:C.info}}>{total} venta(s)</span>
+              </div>
+            ))}
+          </Card>
+        </div>
+
+        <SectionTitle>Top productos</SectionTitle>
+        <Card style={{padding:12,marginBottom:18}}>
+          {topProductos.length === 0 && <div style={{fontSize:11,color:C.muted}}>Aun no hay suficientes ventas para este resumen.</div>}
+          {topProductos.map((prod, idx) => (
+            <div key={`${prod.nombre}-${idx}`} style={{display:"flex",justifyContent:"space-between",gap:10,padding:"7px 0",borderBottom:idx<topProductos.length-1?`1px solid ${C.border}`:"none"}}>
+              <div>
+                <div style={{fontSize:12,fontWeight:700,color:C.black}}>{prod.nombre}</div>
+                <div style={{fontSize:11,color:C.muted}}>{prod.piezas} pieza(s)</div>
+              </div>
+              <div style={{fontSize:12,fontWeight:800,color:C.terra}}>{mxn(prod.ventas)}</div>
+            </div>
+          ))}
+        </Card>
+
+        <SectionTitle>Ventas recientes</SectionTitle>
+        {ventasFiltradas.length === 0 && <EmptyState icon="📊" title="Sin ventas" sub="Aun no hay ventas registradas en este rango"/>}
+        {ventasFiltradas.slice(0, 20).map((venta, idx) => (
+          <Card key={venta.id || venta.ventaId || idx} style={{marginBottom:10,borderLeft:`3px solid ${C.terra}`}}>
+            <div style={{display:"flex",justifyContent:"space-between",gap:10}}>
+              <div>
+                <div style={{fontSize:13,fontWeight:700,color:C.black}}>
+                  {Array.isArray(venta.items) && venta.items.length
+                    ? `Venta multiple · ${venta.items.length} producto(s)`
+                    : (venta.nombre || "Producto vendido")}
+                </div>
+                <div style={{fontSize:11,color:C.muted}}>
+                  {venta.ventaId || venta.id}
+                  {!Array.isArray(venta.items) || !venta.items.length ? ` · ${venta.clave || "Sin SKU"}` : ""}
+                </div>
+                <div style={{fontSize:11,color:C.muted,marginTop:2}}>
+                  {venta.fechaVenta || "Sin fecha"} · {venta.canalVenta || "Canal no indicado"} · {venta.metodoPago || "Pago no indicado"}
+                </div>
+                {(venta.vendedor || venta.cliente) && (
+                  <div style={{fontSize:11,color:C.muted,marginTop:2}}>
+                    {[venta.vendedor && `Vendio: ${venta.vendedor}`, venta.cliente && `Cliente: ${venta.cliente}`].filter(Boolean).join(" · ")}
+                  </div>
+                )}
+              </div>
+              <div style={{textAlign:"right"}}>
+                <div style={{fontSize:14,fontWeight:800,color:C.sale}}>
+                  {mxn(Array.isArray(venta.items) && venta.items.length ? (venta.totalVenta || 0) : (venta.precioVenta || 0))}
+                </div>
+                <div style={{fontSize:11,color:(Number(venta.utilidad) || 0) >= 0 ? C.ok : C.warn}}>
+                  Utilidad {mxn(venta.utilidad || 0)}
+                </div>
+              </div>
+            </div>
+            {Array.isArray(venta.items) && venta.items.length > 0 ? (
+              <>
+                <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:8}}>
+                  {venta.items.slice(0, 6).map((item, itemIdx) => (
+                    <span key={`${item.clave || item.idInterno || itemIdx}`} style={{
+                      fontSize:10,
+                      fontWeight:700,
+                      padding:"3px 8px",
+                      borderRadius:20,
+                      background:C.stone,
+                      color:C.black,
+                    }}>
+                      {item.clave || item.idInterno || "Sin SKU"}
+                    </span>
+                  ))}
+                  {venta.items.length > 6 && (
+                    <span style={{fontSize:10,fontWeight:700,padding:"3px 8px",borderRadius:20,background:C.terraL,color:C.terra}}>
+                      +{venta.items.length - 6} más
+                    </span>
+                  )}
+                </div>
+                <div style={{fontSize:11,color:C.muted,marginTop:8,lineHeight:1.6}}>
+                  {venta.items.slice(0, 3).map(item => item.nombre || item.clave || "Producto").join(" · ")}
+                  {venta.items.length > 3 ? ` +${venta.items.length - 3} más` : ""}
+                </div>
+              </>
+            ) : (
+              <div style={{display:"flex",gap:8,alignItems:"center",marginTop:8,flexWrap:"wrap"}}>
+                <span style={{
+                  fontSize:10,
+                  fontWeight:700,
+                  padding:"3px 8px",
+                  borderRadius:20,
+                  background:C.stone,
+                  color:C.black,
+                }}>
+                  {venta.clave || "Sin SKU"}
+                </span>
+                {(venta.categoria || venta.marca) && (
+                  <span style={{fontSize:11,color:C.muted}}>
+                    {[venta.marca, venta.categoria].filter(Boolean).join(" · ")}
+                  </span>
+                )}
+              </div>
+            )}
+          </Card>
+        ))}
+      </div>
     </div>
   );
 }
@@ -804,7 +1158,7 @@ function AdminPedidos({pedidos,onActualizarEstado,onBack}){
 }
 
 // ─── REPARTIDOR ───────────────────────────────────────────
-function AppRepartidor({onBack}){
+function AppRepartidor({onBack,onActualizarEstado}){
   const[pedidos,setPedidos]=useState([]);
   const[cargando,setCargando]=useState(true);
   const[telefono,setTelefono]=useState("");
@@ -843,8 +1197,8 @@ function AppRepartidor({onBack}){
               <div style={{fontSize:12,color:C.muted,marginBottom:6}}>📞 {o.cliente?.telefono} · {o.metodoPago==="cod"?`💵 Cobrar ${mxn(o.total)} MXN`:"📲 Ya pagó"}</div>
               {articulos.length>0&&<div style={{background:C.stone,padding:"8px 10px",marginBottom:10,fontSize:12,color:C.black}}>{articulos.map(i=>i.nombre+(i.talla?" T:"+i.talla:"")).join(" · ")}</div>}
               <div style={{display:"flex",gap:8}}>
-                {o.status!=="en_ruta"&&<button onClick={()=>dbUpdate(COL.pedidos,o.id,{status:"en_ruta"})} style={{flex:1,padding:"10px",background:C.terra,color:C.white,border:"none",fontSize:12,fontWeight:700,cursor:"pointer"}}>🛵 Salir a entregar</button>}
-                {o.status==="en_ruta"&&<button onClick={()=>dbUpdate(COL.pedidos,o.id,{status:"entregado",entregadoEn:new Date().toISOString()})} style={{flex:1,padding:"10px",background:C.ok,color:C.white,border:"none",fontSize:12,fontWeight:700,cursor:"pointer"}}>✅ Entregado</button>}
+                {o.status!=="en_ruta"&&<button onClick={()=>onActualizarEstado(o.id,"en_ruta")} style={{flex:1,padding:"10px",background:C.terra,color:C.white,border:"none",fontSize:12,fontWeight:700,cursor:"pointer"}}>🛵 Salir a entregar</button>}
+                {o.status==="en_ruta"&&<button onClick={()=>onActualizarEstado(o.id,"entregado")} style={{flex:1,padding:"10px",background:C.ok,color:C.white,border:"none",fontSize:12,fontWeight:700,cursor:"pointer"}}>✅ Entregado</button>}
                 <WaBtn small tel={o.cliente?.telefono} msg={`Hola ${o.cliente?.nombre}! Soy el repartidor de CASI 🛵. Voy en camino a ${o.zona?.name}.`} label="Avisar"/>
               </div>
             </Card>
@@ -911,30 +1265,195 @@ function AppVendedor({onBack}){
 export default function App(){
   const[modo,setModo]=useState("store");
   const[tabAdmin,setTabAdmin]=useState("dashboard");
-  const[adminAbierto,setAdminAbierto]=useState(false);
   const[tabTienda,setTabTienda]=useState("store");
   const[pedidos,setPedidos]=useState([]);
   const[inventario,setInventario]=useState([]);
+  const[ventas,setVentas]=useState([]);
   const[fbOk,setFbOk]=useState(false);
   const[listo,setListo]=useState(false);
+  const[adminUser,setAdminUser]=useState(null);
+  const[authReady,setAuthReady]=useState(!STORE_CONFIG.adminAuthEnabled);
   const unsubRef=useRef(null);
+
+  async function refreshAdminData(){
+    const [inv, sales] = await Promise.all([
+      dbGetAll(COL.inventario,"createdAt","desc").catch(()=>[]),
+      dbGetAll(COL.ventas,"createdAt","desc").catch(()=>[]),
+    ]);
+    setInventario(inv);
+    setVentas(sales);
+  }
 
   useEffect(()=>{
     const l=document.createElement("link");
     l.href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@700;800;900&family=DM+Sans:wght@400;500;600;700;800&display=swap";
     l.rel="stylesheet";document.head.appendChild(l);
-    initFirebase().then(async()=>{
+    initFirebase().then(()=>{
       setFbOk(true);
-      unsubRef.current=dbListen(COL.pedidos,data=>setPedidos(data));
-      const inv=await dbGetAll(COL.inventario,"createdAt","desc");
-      setInventario(inv);
       setListo(true);
     }).catch(()=>setListo(true));
     return()=>{if(unsubRef.current)unsubRef.current();};
   },[]);
 
+  useEffect(()=>{
+    if(!STORE_CONFIG.adminAuthEnabled){
+      return;
+    }
+    let off = () => {};
+    initFirebase()
+      .then(async()=>{
+        off = await onAdminAuthChanged(async user => {
+          if(!user){
+            setAdminUser(null);
+            setAuthReady(true);
+            return;
+          }
+          const email = String(user.email || "").toLowerCase();
+          const allowlist = STORE_CONFIG.adminEmails || [];
+          if(allowlist.length && !allowlist.includes(email)){
+            await adminSignOut();
+            setAdminUser(null);
+            setAuthReady(true);
+            return;
+          }
+          setAdminUser(user);
+          setAuthReady(true);
+        });
+      })
+      .catch(()=>{
+        setAdminUser(null);
+        setAuthReady(true);
+      });
+    return()=>off();
+  },[]);
+
+  useEffect(()=>{
+    if(unsubRef.current){
+      unsubRef.current();
+      unsubRef.current=null;
+    }
+    if(modo!=="admin" || (STORE_CONFIG.adminAuthEnabled && !adminUser)){
+      return;
+    }
+    unsubRef.current=dbListen(COL.pedidos,data=>setPedidos(data));
+    Promise.resolve().then(refreshAdminData);
+    return()=>{if(unsubRef.current)unsubRef.current();};
+  },[modo,adminUser]);
+
   async function guardarPedido(pedido){try{await dbAdd(COL.pedidos,pedido);}catch(e){console.error(e);}}
-  async function actualizarEstado(id,status){try{await dbUpdate(COL.pedidos,id,{status});}catch(e){console.error(e);}}
+  async function actualizarEstado(id,status){
+    try{
+      const pedido = pedidos.find(o => o.id === id) || await dbGet(COL.pedidos, id);
+      if(!pedido){
+        await dbUpdate(COL.pedidos,id,{status});
+        return;
+      }
+
+      const itemIds = (pedido.carrito||[]).map(i => i.id).filter(Boolean);
+      const inventoryMap = new Map(inventario.map(item => [item.id, item]));
+      const shouldReserve = ["confirmado","preparando","en_ruta"].includes(status);
+      const shouldRelease = status === "cancelado";
+      const shouldSell = status === "entregado";
+
+      for (const itemId of itemIds) {
+        const item = inventoryMap.get(itemId) || await dbGet(COL.inventario, itemId);
+        if (!item) continue;
+
+        if (shouldReserve) {
+          if (item.estado === "reservado" && item.reservedOrderId === id) {
+            continue;
+          }
+          if (item.estado === "reservado" && item.reservedOrderId && item.reservedOrderId !== id) {
+            continue;
+          }
+          if (item.estado !== "vendido") {
+            await dbUpdate(COL.inventario, itemId, {
+              estado: "reservado",
+              activo: false,
+              reservedOrderId: id,
+              reservedAt: new Date().toISOString(),
+              estadoPrevioReserva: item.estadoPrevioReserva || item.estado || "en_venta",
+              activoPrevioReserva: item.activoPrevioReserva !== undefined ? item.activoPrevioReserva : (item.activo !== undefined ? item.activo : true),
+            });
+          }
+          continue;
+        }
+
+        if (shouldRelease) {
+          if (item.estado === "reservado" && item.reservedOrderId === id) {
+            const restore = estadoDisponibleDesdeProducto(item);
+            await dbUpdate(COL.inventario, itemId, {
+              estado: item.estadoPrevioReserva || restore.estado,
+              activo: item.activoPrevioReserva !== undefined ? item.activoPrevioReserva : restore.activo,
+              reservedOrderId: "",
+              reservedAt: "",
+              estadoPrevioReserva: "",
+              activoPrevioReserva: null,
+            });
+          }
+          continue;
+        }
+
+        if (shouldSell) {
+          let ventaId = item.ventaId || "";
+          if (!ventaId) {
+            const saleNum = await nextId("sale");
+            ventaId = padId(saleNum, "VEN-");
+            const ventaPrecio = Number(item.precio || 0);
+            const costoMXN = Number(item.costoMXN || 0);
+            await dbCreate(COL.ventas, ventaId, {
+              ventaId,
+              productoId: item.id,
+              clave: item.clave || "",
+              idInterno: item.idInterno || "",
+              ticketOrigen: item.ticketOrigen || "",
+              shipmentId: item.shipmentId || "",
+              nombre: item.nombre || "",
+              categoria: item.categoria || "",
+              marca: item.marca || "",
+              talla: item.talla || "",
+              genero: terminoNatural(item.genero || ""),
+              precioVenta: ventaPrecio,
+              costoMXN,
+              utilidad: Number((ventaPrecio - costoMXN).toFixed(2)),
+              fechaVenta: new Date().toISOString().slice(0, 10),
+              vendidoAt: new Date().toISOString(),
+              metodoPago: pedido.metodoPago === "cod" ? "efectivo" : "transferencia",
+              canalVenta: "tienda_online",
+              vendedor: "",
+              cliente: pedido.cliente?.nombre || "",
+              nota: `Pedido ${pedido.id}`,
+              origen: "pedido_online",
+              pedidoId: pedido.id,
+            });
+          }
+
+          await dbUpdate(COL.inventario, itemId, {
+            estado: "vendido",
+            activo: false,
+            fechaVenta: new Date().toISOString().slice(0, 10),
+            vendidoAt: new Date().toISOString(),
+            metodoVenta: "pedido_online",
+            metodoPagoVenta: pedido.metodoPago === "cod" ? "efectivo" : "transferencia",
+            canalVenta: "tienda_online",
+            clienteVenta: pedido.cliente?.nombre || "",
+            notaVenta: `Pedido ${pedido.id}`,
+            ventaId,
+            reservedOrderId: id,
+          });
+        }
+      }
+
+      const extra =
+        shouldReserve ? { reservadoEn: new Date().toISOString() } :
+        shouldRelease ? { liberadoEn: new Date().toISOString() } :
+        shouldSell ? { entregadoEn: new Date().toISOString() } :
+        {};
+
+      await dbUpdate(COL.pedidos,id,{status,...extra});
+      await refreshAdminData();
+    }catch(e){console.error(e);}
+  }
 
   const alertas=pedidos.filter(o=>["nuevo","verificando"].includes(o.status)).length;
 
@@ -949,7 +1468,7 @@ export default function App(){
   );
 
   const MODOS=[{id:"store",label:"🛍️ Tienda"},{id:"driver",label:"🛵 Repartidor"},{id:"vendor",label:"🏪 Vendedor"},{id:"admin",label:"👑 Admin"}];
-  const TABS_ADMIN=[{id:"dashboard",label:"Inicio"},{id:"orders",label:`Pedidos${alertas>0?" ("+alertas+")":""}`},{id:"tickets",label:"Tickets"},{id:"shipments",label:"Envíos"},{id:"inventory",label:"Inventario"},{id:"drivers",label:"Repartos"},{id:"vendors",label:"Vendedores"}];
+  const TABS_ADMIN=[{id:"dashboard",label:"Inicio"},{id:"orders",label:`Pedidos${alertas>0?" ("+alertas+")":""}`},{id:"tickets",label:"Tickets"},{id:"shipments",label:"Envíos"},{id:"inventory",label:"Inventario"},{id:"reports",label:"Reportes"},{id:"drivers",label:"Repartos"},{id:"vendors",label:"Vendedores"}];
   const TABS_TIENDA=[{id:"store",label:"Tienda",icon:"◈"},{id:"orders",label:"Pedidos",icon:"◎"}];
 
   function renderContenido(){
@@ -957,18 +1476,23 @@ export default function App(){
       if(tabTienda==="store")return<Store onOrder={guardarPedido}/>;
       if(tabTienda==="orders")return<MisPedidos onBack={()=>setTabTienda("store")}/>;
     }
-    if(modo==="driver")return<AppRepartidor onBack={()=>setModo("store")}/>;
+    if(modo==="driver")return<AppRepartidor onBack={()=>setModo("store")} onActualizarEstado={actualizarEstado}/>;
     if(modo==="vendor")return<AppVendedor onBack={()=>setModo("store")}/>;
     if(modo==="admin"){
-      if(!adminAbierto)return<PinLock correct={STORE_CONFIG.adminPin} onUnlock={()=>setAdminAbierto(true)} title="Admin CASI"/>;
+      if(STORE_CONFIG.adminAuthEnabled && !authReady)return<Loading message="Preparando acceso admin..."/>;
+      if(STORE_CONFIG.adminAuthEnabled && !adminUser)return<AdminAuthGate onReady={()=>setTabAdmin("dashboard")}/>;
       if(tabAdmin==="dashboard")return<AdminDashboard pedidos={pedidos} inventario={inventario} onNav={t=>setTabAdmin(t)}/>;
       if(tabAdmin==="orders")return<AdminPedidos pedidos={pedidos} onActualizarEstado={actualizarEstado} onBack={()=>setTabAdmin("dashboard")}/>;
-      if(tabAdmin==="tickets")return<TicketsScreen onBack={()=>setTabAdmin("dashboard")}/>;
+      if(tabAdmin==="tickets")return<TicketsScreen
+          onBack={()=>setTabAdmin("dashboard")}
+          onRefresh={refreshAdminData}
+        />;
       if(tabAdmin==="shipments")return<ShipmentsScreen onBack={()=>setTabAdmin("dashboard")}/>;
       if(tabAdmin==="inventory")return<InventoryScreen
           inventory={inventario}
-          onRefresh={async()=>{const inv=await dbGetAll(COL.inventario,"createdAt","desc");setInventario(inv);}}
+          onRefresh={refreshAdminData}
           onBack={()=>setTabAdmin("dashboard")}/>;
+      if(tabAdmin==="reports")return<ReportsScreen ventas={ventas} inventario={inventario} onBack={()=>setTabAdmin("dashboard")}/>;
       if(tabAdmin==="drivers")return<EmptyState icon="🛵" title="Repartidores" sub="Módulo en construcción"/>;
       if(tabAdmin==="vendors")return<EmptyState icon="🏪" title="Vendedores" sub="Módulo en construcción"/>;
     }
@@ -976,27 +1500,35 @@ export default function App(){
   }
 
   return(
-    <div style={{minHeight:"100vh",background:"#111",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"20px 12px",fontFamily:FONT.body}}>
+    <div className="notranslate" translate="no" style={{minHeight:"100vh",background:"#111",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"20px 12px",fontFamily:FONT.body}}>
       <div style={{marginBottom:12,display:"flex",gap:6,flexWrap:"wrap",justifyContent:"center"}}>
         {MODOS.map(m=>(
-          <button key={m.id} onClick={()=>{setModo(m.id);if(m.id!=="admin")setAdminAbierto(false);if(m.id==="store")setTabTienda("store");}} style={{padding:"7px 14px",border:"none",cursor:"pointer",background:modo===m.id?C.terra:"rgba(255,255,255,0.1)",color:C.white,fontSize:12,fontWeight:700,letterSpacing:.5,boxShadow:modo===m.id?`0 4px 14px ${C.terra}55`:"none",transition:"all .2s"}}>{m.label}</button>
+          <button key={m.id} onClick={()=>{setModo(m.id);if(m.id==="store")setTabTienda("store");}} style={{padding:"7px 14px",border:"none",cursor:"pointer",background:modo===m.id?C.terra:"rgba(255,255,255,0.1)",color:C.white,fontSize:12,fontWeight:700,letterSpacing:.5,boxShadow:modo===m.id?`0 4px 14px ${C.terra}55`:"none",transition:"all .2s"}}>{m.label}</button>
         ))}
       </div>
-      <div style={{width:390,maxWidth:"100%",background:C.cream,overflow:"hidden",boxShadow:"0 60px 120px rgba(0,0,0,0.9),0 0 0 1px rgba(255,255,255,0.08)",display:"flex",flexDirection:"column",maxHeight:"90vh"}}>
+      <div className="notranslate" translate="no" style={{width:390,maxWidth:"100%",background:C.cream,overflow:"hidden",boxShadow:"0 60px 120px rgba(0,0,0,0.9),0 0 0 1px rgba(255,255,255,0.08)",display:"flex",flexDirection:"column",maxHeight:"90vh"}}>
         <OfflineBanner/>
         {fbOk&&<div style={{background:C.okFade,padding:"5px 14px",display:"flex",alignItems:"center",gap:8,borderBottom:`1px solid ${C.border}`}}>
           <div style={{width:7,height:7,borderRadius:"50%",background:C.ok,animation:"pulse 2s infinite"}}/>
           <span style={{fontSize:10,color:C.ok,fontWeight:700,letterSpacing:1}}>FIREBASE · EN VIVO</span>
           <style>{`@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}`}</style>
         </div>}
-        {modo==="admin"&&adminAbierto&&(
+        {modo==="admin"&&(
           <div style={{background:C.white,borderBottom:`1px solid ${C.border}`,display:"flex",overflowX:"auto",scrollbarWidth:"none",flexShrink:0}}>
             {TABS_ADMIN.map(t=>(
               <button key={t.id} onClick={()=>setTabAdmin(t.id)} style={{padding:"10px 11px",background:"none",border:"none",cursor:"pointer",fontSize:11,fontWeight:tabAdmin===t.id?700:500,color:tabAdmin===t.id?C.terra:C.muted,borderBottom:`2px solid ${tabAdmin===t.id?C.terra:"transparent"}`,transition:"all .2s",whiteSpace:"nowrap",flexShrink:0}}>{t.label}</button>
             ))}
+            {STORE_CONFIG.adminAuthEnabled && adminUser && (
+              <button
+                onClick={async()=>{await adminSignOut(); setTabAdmin("dashboard");}}
+                style={{marginLeft:"auto",padding:"10px 11px",background:"none",border:"none",cursor:"pointer",fontSize:11,fontWeight:700,color:C.danger,whiteSpace:"nowrap",flexShrink:0}}
+              >
+                Salir
+              </button>
+            )}
           </div>
         )}
-        <div style={{flex:1,overflowY:"auto",background:C.cream}}>
+        <div className="notranslate" translate="no" style={{flex:1,overflowY:"auto",background:C.cream}}>
           {renderContenido()}
         </div>
         {modo==="store"&&(
@@ -1011,7 +1543,7 @@ export default function App(){
         )}
       </div>
       <div style={{marginTop:12,fontSize:10,color:"rgba(255,255,255,0.2)",textAlign:"center",lineHeight:2,letterSpacing:1}}>
-        CASI · SIERRA SUR, OAXACA · FIREBASE EN VIVO<br/>ADMIN PIN: {STORE_CONFIG.adminPin}
+        CASI · SIERRA SUR, OAXACA · FIREBASE EN VIVO
       </div>
     </div>
   );

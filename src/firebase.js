@@ -3,25 +3,47 @@ import { FB_CONFIG, COL } from "./config.js";
 // ─── FIREBASE SINGLETON ───────────────────────────────────
 let _db   = null;
 let _fb   = null;
+let _auth = null;
+let _authApi = null;
 let _ready = false;
 
 export async function initFirebase() {
-  if (_ready) return { db: _db, fb: _fb };
+  if (_ready) return { db: _db, fb: _fb, auth: _auth, authApi: _authApi };
   try {
     const { initializeApp, getApps } =
       await import("https://www.gstatic.com/firebasejs/12.12.1/firebase-app.js");
     const fs =
       await import("https://www.gstatic.com/firebasejs/12.12.1/firebase-firestore.js");
+    const authApi =
+      await import("https://www.gstatic.com/firebasejs/12.12.1/firebase-auth.js");
 
     const app = getApps().length ? getApps()[0] : initializeApp(FB_CONFIG);
     _db  = fs.getFirestore(app);
     _fb  = fs;
+    _auth = authApi.getAuth(app);
+    _authApi = authApi;
+    await authApi.setPersistence(_auth, authApi.browserLocalPersistence);
     _ready = true;
-    return { db: _db, fb: _fb };
+    return { db: _db, fb: _fb, auth: _auth, authApi: _authApi };
   } catch (e) {
     console.error("Firebase init error:", e);
     throw e;
   }
+}
+
+export async function adminSignIn(email, password) {
+  const { auth, authApi } = await initFirebase();
+  return authApi.signInWithEmailAndPassword(auth, email, password);
+}
+
+export async function adminSignOut() {
+  const { auth, authApi } = await initFirebase();
+  return authApi.signOut(auth);
+}
+
+export async function onAdminAuthChanged(cb) {
+  const { auth, authApi } = await initFirebase();
+  return authApi.onAuthStateChanged(auth, cb);
 }
 
 // ─── COUNTER (IDs secuenciales) ───────────────────────────
@@ -51,6 +73,16 @@ export async function dbAdd(col, data) {
     updatedAt: new Date().toISOString(),
   });
   return ref.id;
+}
+
+export async function dbCreate(col, id, data) {
+  const { db, fb } = await initFirebase();
+  await fb.setDoc(fb.doc(db, col, id), {
+    ...data,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+  return id;
 }
 
 export async function dbSet(col, id, data) {

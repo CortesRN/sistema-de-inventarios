@@ -5,6 +5,56 @@ export function round2(n) {
   return Math.round((n + Number.EPSILON) * 100) / 100;
 }
 
+function toNumber(value) {
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+  if (value === null || value === undefined) return 0;
+
+  const raw = String(value).trim();
+  if (!raw) return 0;
+
+  const clean = raw.replace(/[$\s]/g, "");
+  const lastComma = clean.lastIndexOf(",");
+  const lastDot = clean.lastIndexOf(".");
+  let normalized = clean;
+
+  if (lastComma >= 0 && lastDot >= 0) {
+    normalized = lastComma > lastDot
+      ? clean.replace(/\./g, "").replace(",", ".")
+      : clean.replace(/,/g, "");
+  } else if (lastComma >= 0) {
+    normalized = clean.replace(",", ".");
+  }
+
+  normalized = normalized.replace(/[^0-9.-]/g, "");
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function allocateProportional(total, weights) {
+  const safeTotal = round2(Number(total) || 0);
+  if (!weights.length) return [];
+
+  const normalized = weights.map(w => Number(w) || 0);
+  const sumWeights = normalized.reduce((a, b) => a + b, 0);
+  if (sumWeights <= 0) {
+    const even = safeTotal / weights.length;
+    let remaining = safeTotal;
+    return weights.map((_, idx) => {
+      const value = idx === weights.length - 1 ? round2(remaining) : round2(even);
+      remaining = round2(remaining - value);
+      return value;
+    });
+  }
+
+  let remaining = safeTotal;
+  return normalized.map((weight, idx) => {
+    if (idx === normalized.length - 1) return round2(remaining);
+    const value = round2(safeTotal * (weight / sumWeights));
+    remaining = round2(remaining - value);
+    return value;
+  });
+}
+
 // ─── 1. COSTEO INDIVIDUAL ─────────────────────────────────
 // Cada línea tiene: descripción, cantidad, costo unitario USD.
 // Los gastos extras (bolsa, otros) se capturan UNA SOLA VEZ
@@ -26,9 +76,9 @@ export function costIndividual(detail) {
   // Subtotal por línea = qty × unitCost
   const withSub = lines.map(l => ({
     ...l,
-    qty:      Number(l.qty)      || 0,
-    unitCost: Number(l.unitCost) || 0,
-    subtotal: (Number(l.qty) || 0) * (Number(l.unitCost) || 0),
+    qty:      toNumber(l.qty),
+    unitCost: toNumber(l.unitCost),
+    subtotal: toNumber(l.qty) * toNumber(l.unitCost),
   }));
 
   const totalSubtotal = withSub.reduce((a, l) => a + l.subtotal, 0);
@@ -36,22 +86,23 @@ export function costIndividual(detail) {
   // Impuestos sobre el subtotal total
   let totalTax = 0;
   if (detail.taxMode === "pct") {
-    totalTax = totalSubtotal * ((Number(detail.taxPct) || 0) / 100);
+    totalTax = totalSubtotal * (toNumber(detail.taxPct) / 100);
   } else {
-    totalTax = Number(detail.taxFixed) || 0;
+    totalTax = toNumber(detail.taxFixed);
   }
 
   // Otros gastos del ticket (bolsa, etc.) — UN SOLO MONTO para todo el ticket
-  const totalOther = Number(detail.ticketOtherCosts) || 0;
+  const totalOther = toNumber(detail.ticketOtherCosts);
 
   // Prorrateo por valor (peso = subtotal de la línea / total del ticket)
-  return withSub.map(l => {
-    const weight = totalSubtotal > 0
-      ? l.subtotal / totalSubtotal
-      : 1 / withSub.length;
+  const weights = withSub.map(l => totalSubtotal > 0 ? l.subtotal / totalSubtotal : 1 / withSub.length);
+  const allocatedTax = allocateProportional(totalTax, weights);
+  const allocatedOther = allocateProportional(totalOther, weights);
 
-    const taxAmt        = round2(totalTax   * weight);
-    const otherAmt      = round2(totalOther * weight);
+  return withSub.map((l, idx) => {
+    const weight = weights[idx];
+    const taxAmt = allocatedTax[idx] || 0;
+    const otherAmt = allocatedOther[idx] || 0;
     const totalCostLine = round2(l.subtotal + taxAmt + otherAmt);
     const costUSD       = l.qty > 0 ? round2(totalCostLine / l.qty) : 0;
 
@@ -76,17 +127,17 @@ export function costIndividual(detail) {
 //   taxFixed: number,
 // }
 export function costLote(detail) {
-  const qty  = Number(detail.totalPieces) || 1;
-  const base = Number(detail.ticketCost)  || 0;
+  const qty  = toNumber(detail.totalPieces) || 1;
+  const base = toNumber(detail.ticketCost);
 
   let tax = 0;
   if (detail.taxMode === "pct") {
-    tax = base * ((Number(detail.taxPct) || 0) / 100);
+    tax = base * (toNumber(detail.taxPct) / 100);
   } else {
-    tax = Number(detail.taxFixed) || 0;
+    tax = toNumber(detail.taxFixed);
   }
 
-  const other = Number(detail.ticketOtherCosts) || 0;
+  const other = toNumber(detail.ticketOtherCosts);
   const total = base + tax + other;
 
   return {
@@ -119,17 +170,47 @@ export function applyShipmentCost(items, shipmentCostUSD) {
     finalCostUSD: round2(i.costUSD || 0),
   }));
 
-  const totalValue = items.reduce((a, i) => a + (Number(i.costUSD) || 0), 0);
+  const safeItems = items.map(i => ({
+    ...i,
+    costUSD: Number(i.costUSD) || 0,
+  }));
+  const zeroCostItems = safeItems.filter(i => i.costUSD <= 0);
+  const positiveCostItems = safeItems.filter(i => i.costUSD > 0);
 
-  return items.map(i => {
-    const weight     = totalValue > 0
-      ? (Number(i.costUSD) || 0) / totalValue
-      : 1 / items.length;
-    const freightUSD = round2(shipmentCostUSD * weight);
+  // Si hay piezas donadas o con costo 0, cada una recibe al menos el promedio simple
+  // del flete por pieza. El resto se reparte por valor entre las piezas con costo.
+  const averageShare = shipmentCostUSD / safeItems.length;
+  const zeroPool = round2(averageShare * zeroCostItems.length);
+  const remainingPool = round2(shipmentCostUSD - zeroPool);
+  const zeroAllocations = new Map();
+  let remainingZeroPool = zeroPool;
+  zeroCostItems.forEach((item, idx) => {
+    const share = idx === zeroCostItems.length - 1 ? round2(remainingZeroPool) : round2(averageShare);
+    remainingZeroPool = round2(remainingZeroPool - share);
+    zeroAllocations.set(item.id, share);
+  });
+
+  const positiveAllocations = new Map();
+  if (positiveCostItems.length) {
+    const shares = allocateProportional(
+      remainingPool > 0 ? remainingPool : shipmentCostUSD,
+      positiveCostItems.map(i => i.costUSD)
+    );
+    positiveCostItems.forEach((item, idx) => {
+      positiveAllocations.set(item.id, shares[idx] || 0);
+    });
+  }
+
+  return safeItems.map(i => {
+    const freightUSD = round2(
+      zeroAllocations.get(i.id) ??
+      positiveAllocations.get(i.id) ??
+      0
+    );
     return {
       ...i,
       freightUSD,
-      finalCostUSD: round2((Number(i.costUSD) || 0) + freightUSD),
+      finalCostUSD: round2(i.costUSD + freightUSD),
     };
   });
 }
@@ -169,8 +250,8 @@ export function validateTicketLines(lines) {
   const errors = [];
   lines.forEach((l, i) => {
     if (!l.descr) errors.push(`Línea ${i+1}: falta la descripción`);
-    if (!(Number(l.qty) > 0)) errors.push(`Línea ${i+1}: la cantidad debe ser mayor a 0`);
-    if (!(Number(l.unitCost) > 0)) errors.push(`Línea ${i+1}: el costo unitario debe ser mayor a 0`);
+    if (!(toNumber(l.qty) > 0)) errors.push(`Línea ${i+1}: la cantidad debe ser mayor a 0`);
+    if (!(toNumber(l.unitCost) > 0)) errors.push(`Línea ${i+1}: el costo unitario debe ser mayor a 0`);
   });
   return errors;
 }

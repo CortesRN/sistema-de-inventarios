@@ -1,8 +1,8 @@
-import { useState, useEffect, useRef } from "react";
+﻿import { useState, useEffect, useRef } from "react";
 import { C, FONT, Btn, Inp, Select, Card, SectionTitle, TopBar,
-         InfoBox, Table, Loading, Badge, EmptyState } from "./ui.jsx";
-import { dbAdd, dbUpdate, dbGetAll, nextId, padId, fetchExchangeRate } from "./firebase.js";
-import { costIndividual, costLote } from "./costing.js";
+         InfoBox, Table, Loading, Badge, EmptyState, HelpTip } from "./ui.jsx";
+import { dbCreate, dbUpdate, dbGetAll, nextId, padId, fetchExchangeRate } from "./firebase.js";
+import { costIndividual, costLote, round2 } from "./costing.js";
 import { COL, CATEGORIAS, STORE_CONFIG, TICKET_STATUS, UBICACIONES } from "./config.js";
 
 function hoyISO() {
@@ -16,36 +16,96 @@ function leer(ticket, campoEs, campoEn, fallback = null) {
 function aNumero(valor) {
   if (typeof valor === "number") return Number.isFinite(valor) ? valor : 0;
   if (valor === null || valor === undefined) return 0;
-  let limpio = String(valor).replace(/[^\d,.-]/g, "").trim();
-  if (!limpio) return 0;
+  const raw = String(valor).trim();
+  if (!raw) return 0;
 
-  const tieneComa = limpio.includes(",");
-  const tienePunto = limpio.includes(".");
+  const limpio = raw.replace(/[$\s]/g, "");
+  const lastComma = limpio.lastIndexOf(",");
+  const lastDot = limpio.lastIndexOf(".");
+  let normalizado = limpio;
 
-  // Si trae ambos separadores, tomamos el último como decimal.
-  if (tieneComa && tienePunto) {
-    const ultimoComa = limpio.lastIndexOf(",");
-    const ultimoPunto = limpio.lastIndexOf(".");
-    const decimalEsComa = ultimoComa > ultimoPunto;
-    limpio = decimalEsComa
+  if (lastComma >= 0 && lastDot >= 0) {
+    normalizado = lastComma > lastDot
       ? limpio.replace(/\./g, "").replace(",", ".")
       : limpio.replace(/,/g, "");
-  } else if (tieneComa && !tienePunto) {
-    // Si solo hay coma: "14,99" => 14.99 ; "1,234" => 1234
-    const partes = limpio.split(",");
-    limpio = partes.length === 2 && partes[1].length <= 2
-      ? `${partes[0]}.${partes[1]}`
-      : limpio.replace(/,/g, "");
-  } else if (!tieneComa && tienePunto) {
-    // Si solo hay punto: "14.99" => 14.99 ; "1.234" => 1234
-    const partes = limpio.split(".");
-    limpio = partes.length === 2 && partes[1].length <= 2
-      ? limpio
-      : limpio.replace(/\./g, "");
+  } else if (lastComma >= 0) {
+    normalizado = limpio.replace(",", ".");
   }
 
-  const n = Number(limpio);
+  normalizado = normalizado.replace(/[^0-9.-]/g, "");
+  const n = Number(normalizado);
   return Number.isFinite(n) ? n : 0;
+}
+function aCantidad(valor) {
+  return Math.max(0, Math.round(aNumero(valor)));
+}
+function normalizaLinea(line) {
+  return {
+    ...line,
+    qty: aCantidad(line.qty),
+    unitCost: aNumero(line.unitCost),
+  };
+}
+function TituloConAyuda({ title, help }) {
+  return (
+    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:8, marginBottom:8 }}>
+      <div style={{ fontSize:12, fontWeight:700, color:C.black }}>{title}</div>
+      {help ? <HelpTip text={help} title={title}/> : null}
+    </div>
+  );
+}
+function resumenCosteo(ticketLike) {
+  const isLote = leer(ticketLike, "metodo", "method", "individual") === "lote";
+  const rate = aNumero(leer(ticketLike, "tipoCambio", "exchangeRate", STORE_CONFIG.exchangeRate)) || STORE_CONFIG.exchangeRate;
+  const lineasNormalizadas = leer(ticketLike, "lineas", "lines", []).map(normalizaLinea);
+
+  if (isLote) {
+    const loteResult = costLote({
+      totalPieces:      leer(ticketLike, "totalPiezas", "totalPieces", 0),
+      ticketCost:       leer(ticketLike, "costoTicket", "ticketCost", 0),
+      ticketOtherCosts: leer(ticketLike, "otrosGastosTicket", "ticketOtherCosts", 0),
+      taxMode:          leer(ticketLike, "modoImpuesto", "taxMode", "fixed"),
+      taxPct:           leer(ticketLike, "impuestoPct", "taxPct", 0),
+      taxFixed:         leer(ticketLike, "impuestoFijo", "taxFixed", 0),
+    });
+
+    return {
+      isLote,
+      rate,
+      totalPiezas: loteResult.totalPieces || 0,
+      costedLines: [],
+      loteResult,
+      previewBase: loteResult.ticketCost || 0,
+      previewTax: loteResult.taxAmt || 0,
+      previewOther: loteResult.otherAmt || 0,
+      previewTotal: loteResult.totalCost || 0,
+    };
+  }
+
+  const costedLines = costIndividual({
+    lines:            lineasNormalizadas,
+    ticketOtherCosts: leer(ticketLike, "otrosGastosTicket", "ticketOtherCosts", 0),
+    taxMode:          leer(ticketLike, "modoImpuesto", "taxMode", "fixed"),
+    taxPct:           leer(ticketLike, "impuestoPct", "taxPct", 0),
+    taxFixed:         leer(ticketLike, "impuestoFijo", "taxFixed", 0),
+  });
+
+  const previewBase = round2(costedLines.reduce((a, l) => a + (l.subtotal || 0), 0));
+  const previewTax = round2(costedLines.reduce((a, l) => a + (l.taxAmt || 0), 0));
+  const previewOther = round2(costedLines.reduce((a, l) => a + (l.otherAmt || 0), 0));
+  const previewTotal = round2(costedLines.reduce((a, l) => a + (l.totalCostLine || 0), 0));
+
+  return {
+    isLote,
+    rate,
+    totalPiezas: costedLines.reduce((a, l) => a + aCantidad(l.qty), 0),
+    costedLines,
+    loteResult: null,
+    previewBase,
+    previewTax,
+    previewOther,
+    previewTotal,
+  };
 }
 
 // ─── TICKET LIST ──────────────────────────────────────────
@@ -66,7 +126,7 @@ export function TicketList({ onNew, onOpen, onBack }) {
           {onBack && <button onClick={onBack} style={{ background:C.black, border:"none", width:34, height:34, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:C.white, fontSize:18 }}>←</button>}
           <div>
             <div style={{ fontSize:11, fontWeight:700, color:C.terra, letterSpacing:3, textTransform:"uppercase", marginBottom:2 }}>Compras</div>
-            <div style={{ fontSize:22, fontWeight:900, color:C.black, fontFamily:FONT.display }}>Tickets de compra</div>
+            <div style={{ fontSize:22, fontWeight:900, color:C.black, fontFamily:FONT.display }} translate="no">Tickets de compra</div>
           </div>
         </div>
         <Btn label="+ Nuevo" onClick={onNew} small full={false}/>
@@ -91,13 +151,13 @@ export function TicketList({ onNew, onOpen, onBack }) {
               <Badge c={s.color} bg={s.bg} label={s.label}/>
             </div>
             <div style={{ fontSize:12, color:C.muted, marginBottom:4 }}>
-              {origen === "usa" ? "🇺🇸 USA" : "🇲🇽 México"} · {metodo === "individual" ? "Individual" : "Por lote"}
-              {tipoCambio ? ` · TC: $${tipoCambio}` : ""}
+              <span translate="no">{origen === "usa" ? "🇺🇸 USA" : "🇲🇽 México"} · {metodo === "individual" ? "Individual" : "Por lote"}</span>
+              {tipoCambio ? <span translate="no">{` · TC: $${tipoCambio}`}</span> : ""}
             </div>
             <div style={{ display:"flex", justifyContent:"space-between" }}>
               <span style={{ fontSize:12, color:C.muted }}>{fechaTicket?.slice(0,10)}</span>
               <span style={{ fontSize:13, fontWeight:700, color:C.terra }}>
-                {totalPiezas || 0} pzas · ${Number(costoTotalUSD || 0).toFixed(2)} USD
+                <span translate="no">{totalPiezas || 0} pzas · ${Number(costoTotalUSD || 0).toFixed(2)} USD</span>
               </span>
             </div>
           </Card>
@@ -131,28 +191,20 @@ export function NewTicket({ onBack, onCreated }) {
     setGuardando(true);
     try {
       const n  = await nextId("ticket");
-      const id = padId(n, "T-");
-      await dbAdd(COL.tickets, {
+      const id = padId(n, "T");
+      await dbCreate(COL.tickets, id, {
         ticketId: id,
         ticketNum: n,
         fechaTicket: fechaTicket || hoyISO(),
         origen,
         metodo,
         notas,
-        tipoCambio: aNumero(tipoCambio) || STORE_CONFIG.exchangeRate,
+        tipoCambio: parseFloat(tipoCambio) || STORE_CONFIG.exchangeRate,
         estado: "draft",
         totalPiezas: 0,
         costoTotalUSD: 0,
         lineas: [],
         // Compatibilidad (campos históricos)
-        origin: origen,
-        method: metodo,
-        notes: notas,
-        exchangeRate: aNumero(tipoCambio) || STORE_CONFIG.exchangeRate,
-        status: "draft",
-        totalPieces: 0,
-        totalCostUSD: 0,
-        lines: [],
       });
       onCreated(id);
     } finally {
@@ -166,9 +218,12 @@ export function NewTicket({ onBack, onCreated }) {
       <TopBar title="Nuevo Ticket" subtitle="Paso 1 de 3 — Datos generales" onBack={onBack}/>
       <div style={{ padding:"20px 0 0" }}>
 
-        <InfoBox type="terra">
-          El ID se genera automáticamente. Solo define el origen y método de costeo.
-        </InfoBox>
+        <div style={{ display:"flex", justifyContent:"flex-end", marginBottom:12 }}>
+          <HelpTip
+            title="Nuevo ticket"
+            text="El ID del ticket se genera automáticamente. Aquí solo defines origen, método de costeo y fecha de compra."
+          />
+        </div>
 
         <Select label="Origen de la compra" value={origen} onChange={setOrigen} options={[
           { value:"usa",    label:"🇺🇸 USA — Importación (USD)" },
@@ -193,7 +248,7 @@ export function NewTicket({ onBack, onCreated }) {
             </div>
             <div style={{ display:"flex", gap:10, marginBottom:4 }}>
               <input
-                value={tipoCambio} onChange={e => setTipoCambio(e.target.value)} type="number" step="0.01"
+                value={tipoCambio} onChange={e => setTipoCambio(e.target.value)} type="text" inputMode="decimal"
                 style={{ flex:1, padding:"12px 16px", border:`1.5px solid ${C.border}`,
                   fontSize:15, fontWeight:700, outline:"none", background:C.white, color:C.terra, fontFamily:FONT.body }}
               />
@@ -204,8 +259,11 @@ export function NewTicket({ onBack, onCreated }) {
                 {cargandoCambio ? "…" : "📡 Automático"}
               </button>
             </div>
-            <div style={{ fontSize:11, color:C.muted, marginBottom:20, lineHeight:1.6 }}>
-              Se guarda con el ticket para que el historial sea correcto aunque el dólar cambie después.
+            <div style={{ display:"flex", justifyContent:"flex-end", marginBottom:16 }}>
+              <HelpTip
+                title="Tipo de cambio"
+                text="El tipo de cambio se guarda dentro del ticket para conservar el histórico correcto aunque el dólar cambie después."
+              />
             </div>
           </>
         )}
@@ -216,8 +274,22 @@ export function NewTicket({ onBack, onCreated }) {
         <Inp label="Notas" value={notas} onChange={setNotas}
           placeholder="Proveedor, tienda, observaciones…" hint="Opcional"/>
 
-        <Btn label={guardando ? "Creando ticket…" : "Crear ticket y continuar →"}
-          onClick={handleCreate} disabled={guardando}/>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+          <button onClick={onBack} style={{
+            padding:"12px",
+            background:C.white,
+            border:`1.5px solid ${C.border}`,
+            fontSize:12,
+            fontWeight:800,
+            cursor:"pointer",
+            color:C.black,
+            borderRadius:16,
+          }}>
+            Cancelar
+          </button>
+          <Btn label={guardando ? "Creando ticket…" : "Crear ticket y continuar →"}
+            onClick={handleCreate} disabled={guardando}/>
+        </div>
       </div>
     </div>
   );
@@ -227,12 +299,13 @@ export function NewTicket({ onBack, onCreated }) {
 export function TicketDetail({ ticket, onBack, onNext }) {
   const isLote = leer(ticket, "metodo", "method", "individual") === "lote";
   const [fechaTicket, setFechaTicket] = useState(ticket.fechaTicket || ticket.createdAt?.slice(0,10) || hoyISO());
+  const ticketRate = aNumero(leer(ticket, "tipoCambio", "exchangeRate", STORE_CONFIG.exchangeRate)) || STORE_CONFIG.exchangeRate;
 
   // ── Estado Individual ──────────────────────────────────
   const [lines,       setLines]       = useState(leer(ticket, "lineas", "lines", []));
   const [otherCosts,  setOtherCosts]  = useState(String(leer(ticket, "otrosGastosTicket", "ticketOtherCosts", "")));
-  const [taxMode,     setTaxMode]     = useState(leer(ticket, "modoImpuesto", "taxMode", "pct"));
-  const [taxPct,      setTaxPct]      = useState(String(leer(ticket, "impuestoPct", "taxPct", "10")));
+  const [taxMode,     setTaxMode]     = useState(leer(ticket, "modoImpuesto", "taxMode", "fixed"));
+  const [taxPct,      setTaxPct]      = useState(String(leer(ticket, "impuestoPct", "taxPct", "")));
   const [taxFixed,    setTaxFixed]    = useState(String(leer(ticket, "impuestoFijo", "taxFixed", "")));
 
   // ── Estado Lote ────────────────────────────────────────
@@ -264,24 +337,41 @@ export function TicketDetail({ ticket, onBack, onNext }) {
   // ── Preview en tiempo real ─────────────────────────────
   // Calcula el subtotal de cada línea para mostrar al usuario
   function lineSubtotal(line) {
-    const q = aNumero(line.qty);
+    const q = aCantidad(line.qty);
     const c = aNumero(line.unitCost);
     return q * c;
   }
 
   const totalBase = lines.reduce((a, l) => a + lineSubtotal(l), 0);
-  const baseLote = aNumero(ticketCost);
-
-  let previewTax = 0;
-  if (taxMode === "pct") {
-    const baseImpuestos = isLote ? baseLote : totalBase;
-    previewTax = baseImpuestos * (aNumero(taxPct) / 100);
-  } else {
-    previewTax = aNumero(taxFixed);
-  }
-  const previewOther = aNumero(otherCosts);
-  const previewBase = isLote ? baseLote : totalBase;
-  const previewTotal = previewBase + previewTax + previewOther;
+  const normalizedLines = lines.map(normalizaLinea);
+  const preview = resumenCosteo({
+    ...ticket,
+    fechaTicket: fechaTicket || hoyISO(),
+    tipoCambio: ticketRate,
+    exchangeRate: ticketRate,
+    lineas: normalizedLines,
+    lines: normalizedLines,
+    modoImpuesto: taxMode,
+    taxMode,
+    impuestoPct: aNumero(taxPct),
+    taxPct: aNumero(taxPct),
+    impuestoFijo: aNumero(taxFixed),
+    taxFixed: aNumero(taxFixed),
+    otrosGastosTicket: aNumero(otherCosts),
+    ticketOtherCosts: aNumero(otherCosts),
+    totalPiezas: isLote ? aCantidad(totalPieces) : normalizedLines.reduce((a, l) => a + aCantidad(l.qty), 0),
+    totalPieces: isLote ? aCantidad(totalPieces) : normalizedLines.reduce((a, l) => a + aCantidad(l.qty), 0),
+    costoTicket: isLote ? aNumero(ticketCost) : 0,
+    ticketCost: isLote ? aNumero(ticketCost) : 0,
+  });
+  const previewBase = preview.previewBase;
+  const previewTax = preview.previewTax;
+  const previewOther = preview.previewOther;
+  const previewTotal = preview.previewTotal;
+  const previewRate = preview.rate;
+  const previewLines = preview.costedLines || [];
+  const previewPieces = preview.totalPiezas || 0;
+  const averagePieceCost = previewPieces > 0 ? round2(previewTotal / previewPieces) : 0;
 
   // ── Guardar ────────────────────────────────────────────
   async function handleSave() {
@@ -292,11 +382,11 @@ export function TicketDetail({ ticket, onBack, onNext }) {
       lines.forEach((l, i) => {
         if (!l.descr) errs.push(`Línea ${i+1}: escribe la descripción.`);
         if (!(aNumero(l.qty) > 0)) errs.push(`Línea ${i+1}: la cantidad debe ser mayor a 0.`);
-        if (!(aNumero(l.unitCost) > 0)) errs.push(`Línea ${i+1}: el costo USD debe ser mayor a 0.`);
+        if (aNumero(l.unitCost) < 0) errs.push(`Línea ${i+1}: el costo USD no puede ser negativo.`);
       });
     } else {
       if (!(parseInt(totalPieces) > 0)) errs.push("Ingresa el número de piezas.");
-      if (!(aNumero(ticketCost) > 0)) errs.push("Ingresa el costo total del ticket.");
+      if (aNumero(ticketCost) < 0) errs.push("El costo total del ticket no puede ser negativo.");
     }
     if (errs.length) { setErrors(errs); return; }
     setErrors([]);
@@ -304,32 +394,23 @@ export function TicketDetail({ ticket, onBack, onNext }) {
 
     const update = {
       fechaTicket: fechaTicket || hoyISO(),
-      lineas: lines,
+      lineas: normalizedLines,
       modoImpuesto: taxMode,
       impuestoPct: aNumero(taxPct),
       impuestoFijo: aNumero(taxFixed),
       otrosGastosTicket: aNumero(otherCosts),
       totalPiezas: isLote
-        ? (parseInt(totalPieces) || 0)
-        : lines.reduce((a, l) => a + (parseInt(l.qty) || 0), 0),
+        ? aCantidad(totalPieces)
+        : normalizedLines.reduce((a, l) => a + aCantidad(l.qty), 0),
       costoTicket: isLote ? aNumero(ticketCost) : 0,
       estado: "draft",
-      // Compatibilidad
-      lines,
-      taxMode,
-      taxPct: aNumero(taxPct),
-      taxFixed: aNumero(taxFixed),
-      ticketOtherCosts: aNumero(otherCosts),
-      totalPieces: isLote
-        ? (parseInt(totalPieces) || 0)
-        : lines.reduce((a, l) => a + (parseInt(l.qty) || 0), 0),
-      ticketCost: isLote ? aNumero(ticketCost) : 0,
-      status: "draft",
+      costoTotalUSD: previewTotal,
+      totalCostUSD: previewTotal,
     };
 
     await dbUpdate(COL.tickets, ticket.id, update);
     setSaving(false);
-    onNext({ ...ticket, ...update });
+    onNext({ ...ticket, ...update, tipoCambio: ticketRate, exchangeRate: ticketRate });
   }
 
   return (
@@ -341,15 +422,18 @@ export function TicketDetail({ ticket, onBack, onNext }) {
 
         {/* ── LOTE ── */}
         {isLote && <>
-          <InfoBox type="info">
-            Ingresa el total de piezas contadas y el costo total del ticket en USD. El sistema divide automáticamente entre todas las piezas.
-          </InfoBox>
+          <div style={{ display:"flex", justifyContent:"flex-end", marginBottom:10 }}>
+            <HelpTip
+              title="Modo lote"
+              text="Captura piezas totales y costo total del ticket. Luego se suman otros gastos e impuestos y el total se divide entre todas las piezas para obtener el costo provisional por pieza."
+            />
+          </div>
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
             <Inp label="Total de piezas *" value={totalPieces}
               onChange={setTotalPieces} type="number" small required
               hint="Las que contaste físicamente"/>
             <Inp label="Costo total del ticket USD *" value={ticketCost}
-              onChange={setTicketCost} type="number" small required
+              onChange={setTicketCost} type="text" inputMode="decimal" small required
               hint="Lo que dice el recibo en USD"/>
           </div>
         </>}
@@ -372,6 +456,7 @@ export function TicketDetail({ ticket, onBack, onNext }) {
 
           {lines.map((line, idx) => {
             const sub = lineSubtotal(line);
+            const previewLine = previewLines[idx];
             return (
               <Card key={line.id} style={{ marginBottom:10, background:C.cream }}>
                 {/* Header de línea */}
@@ -416,7 +501,8 @@ export function TicketDetail({ ticket, onBack, onNext }) {
                     label="Costo c/u en USD *"
                     value={String(line.unitCost)}
                     onChange={v => updateLine(idx, "unitCost", v)}
-                    type="number"
+                    type="text"
+                    inputMode="decimal"
                     placeholder="Ej: 12.50"
                     small
                     required
@@ -425,14 +511,38 @@ export function TicketDetail({ ticket, onBack, onNext }) {
 
                 {/* Preview subtotal */}
                 {sub > 0 && (
-                  <div style={{ background:C.white, padding:"8px 12px", borderTop:`1px solid ${C.border}`,
-                    display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-                    <span style={{ fontSize:11, color:C.muted }}>
-                      {aNumero(line.qty)||0} pzas × ${aNumero(line.unitCost)||0}
-                    </span>
-                    <span style={{ fontSize:13, fontWeight:700, color:C.terra }}>
-                      = ${sub.toFixed(2)} USD
-                    </span>
+                  <div style={{ background:C.white, padding:"10px 12px", borderTop:`1px solid ${C.border}` }}>
+                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom: previewLine ? 8 : 0 }}>
+                      <span style={{ fontSize:11, color:C.muted }}>
+                        {aCantidad(line.qty)} pza{aCantidad(line.qty) !== 1 ? "s" : ""} × ${aNumero(line.unitCost).toFixed(2)} USD
+                      </span>
+                      <span style={{ fontSize:13, fontWeight:700, color:C.terra }}>
+                        Base de la línea: ${sub.toFixed(2)} USD
+                      </span>
+                    </div>
+                    {previewLine && (
+                      <>
+                        <div style={{ display:"flex", justifyContent:"space-between", padding:"3px 0" }}>
+                          <span style={{ fontSize:11, color:C.muted }}>+ Otros gastos asignados a esta línea</span>
+                          <span style={{ fontSize:11, color:C.black }}>${(previewLine.otherAmt || 0).toFixed(2)}</span>
+                        </div>
+                        <div style={{ display:"flex", justifyContent:"space-between", padding:"3px 0" }}>
+                          <span style={{ fontSize:11, color:C.muted }}>+ Impuestos asignados a esta línea</span>
+                          <span style={{ fontSize:11, color:C.black }}>${(previewLine.taxAmt || 0).toFixed(2)}</span>
+                        </div>
+                        <div style={{ display:"flex", justifyContent:"space-between", paddingTop:6, marginTop:6, borderTop:`1px solid ${C.border}` }}>
+                          <span style={{ fontSize:11, fontWeight:700, color:C.black }}>Total de entrada de esta línea</span>
+                          <span style={{ fontSize:12, fontWeight:800, color:C.ok }}>${(previewLine.totalCostLine || 0).toFixed(2)} USD</span>
+                        </div>
+                        <div style={{ fontSize:10, color:C.muted, lineHeight:1.5, marginTop:5 }}>
+                          Fórmula: ${sub.toFixed(2)} + ${(previewLine.otherAmt || 0).toFixed(2)} + ${(previewLine.taxAmt || 0).toFixed(2)} = ${(previewLine.totalCostLine || 0).toFixed(2)} USD
+                        </div>
+                        <div style={{ display:"flex", justifyContent:"space-between", paddingTop:4 }}>
+                          <span style={{ fontSize:11, color:C.muted }}>Costo estimado por pieza</span>
+                          <span style={{ fontSize:12, fontWeight:700, color:C.terra }}>${(previewLine.costUSD || 0).toFixed(2)} USD</span>
+                        </div>
+                      </>
+                    )}
                   </div>
                 )}
               </Card>
@@ -455,28 +565,28 @@ export function TicketDetail({ ticket, onBack, onNext }) {
 
         {/* Otros gastos — UN SOLO CAMPO */}
         <Card style={{ marginBottom:14, background:C.terraL, padding:"14px" }}>
-          <div style={{ fontSize:12, fontWeight:700, color:C.terraD, marginBottom:4 }}>
-            📦 Otros gastos del ticket (total en USD)
-          </div>
-          <div style={{ fontSize:11, color:C.muted, marginBottom:10, lineHeight:1.6 }}>
-            Incluye aquí el total de bolsas, empaque u otros gastos del ticket. Se prorratea automáticamente entre todos los productos según su valor.
-          </div>
+          <TituloConAyuda
+            title="📦 Otros gastos del ticket (USD)"
+            help="Incluye aquí bolsas, empaque u otros gastos. El sistema reparte ese monto entre las líneas según el valor de cada una."
+          />
           <Inp
             value={otherCosts}
             onChange={setOtherCosts}
-            type="number"
+            type="text"
+            inputMode="decimal"
             placeholder="Ej: 5.00  (dejar en 0 si no aplica)"
-            hint="Si los tenis llevan bolsa y los demás no, pon el total de todas las bolsas aquí"
+            hint="Total de otros gastos en USD."
           />
         </Card>
 
         {/* Impuestos */}
         <Card style={{ marginBottom:16, padding:"14px" }}>
-          <div style={{ fontSize:12, fontWeight:700, color:C.black, marginBottom:10 }}>
-            🧾 Impuestos del ticket
-          </div>
+          <TituloConAyuda
+            title="🧾 Impuestos del ticket"
+            help="Usa primero monto fijo si ya tienes el dato real del ticket. El porcentaje solo sirve como estimación temporal."
+          />
           <div style={{ display:"flex", gap:8, marginBottom:12 }}>
-            {["pct","fixed"].map(m => (
+            {["fixed","pct"].map(m => (
               <button key={m} onClick={() => setTaxMode(m)} style={{
                 flex:1, padding:"10px",
                 border:`1.5px solid ${taxMode===m ? C.black : C.border}`,
@@ -484,18 +594,28 @@ export function TicketDetail({ ticket, onBack, onNext }) {
                 color: taxMode===m ? C.white : C.black,
                 fontSize:12, fontWeight:700, cursor:"pointer",
               }}>
-                {m === "pct" ? "% Porcentaje" : "$ Monto fijo"}
+                {m === "fixed" ? "$ Monto fijo" : "% Porcentaje"}
               </button>
             ))}
           </div>
 
-          {taxMode === "pct" ? (
+          {taxMode === "fixed" ? (
+            <Inp
+              value={taxFixed}
+              onChange={setTaxFixed}
+              type="text"
+              inputMode="decimal"
+              placeholder="Monto exacto del comprobante en USD"
+              hint="Ejemplo: si el ticket dice 18 USD, captura 18"
+            />
+          ) : (
             <>
               <div style={{ display:"flex", alignItems:"center", gap:10 }}>
                 <input
                   value={taxPct}
                   onChange={e => setTaxPct(e.target.value)}
-                  type="number" step="0.1"
+                  type="text"
+                  inputMode="decimal"
                   style={{ flex:1, padding:"11px 14px", border:`1.5px solid ${C.border}`,
                     fontSize:16, fontWeight:700, outline:"none", background:C.white, color:C.terra, fontFamily:FONT.body }}
                 />
@@ -505,22 +625,23 @@ export function TicketDetail({ ticket, onBack, onNext }) {
                 ⚠️ Estimado. Cuando tengas el recibo exacto cambia a "Monto fijo".
               </div>
             </>
-          ) : (
-            <Inp
-              value={taxFixed}
-              onChange={setTaxFixed}
-              type="number"
-              placeholder="Monto exacto del comprobante en USD"
-              hint="Usa esto cuando tengas el recibo con el monto exacto"
-            />
           )}
         </Card>
+
+        {!isLote && previewLines.length > 0 && (
+          <div style={{ display:"flex", justifyContent:"flex-end", marginBottom:12 }}>
+            <HelpTip
+              title="Costeo individual"
+              text='Cada línea conserva su costo base. Después, otros gastos e impuestos se reparten proporcionalmente: los productos más caros absorben más gasto y los más baratos menos. El dato clave es el costo estimado por pieza.'
+            />
+          </div>
+        )}
 
         {/* ── PREVIEW TOTAL ── */}
         {(totalBase > 0 || (isLote && aNumero(ticketCost) > 0)) && (
           <Card style={{ marginBottom:16, background:C.okFade, borderLeft:`3px solid ${C.ok}`, padding:"14px" }}>
             <div style={{ fontSize:12, fontWeight:700, color:C.ok, marginBottom:10 }}>
-              Vista previa del costo total
+              Resumen de entrada
             </div>
             <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
               {[
@@ -534,13 +655,25 @@ export function TicketDetail({ ticket, onBack, onNext }) {
                 </div>
               ))}
               <div style={{ borderTop:`1px solid ${C.border}`, paddingTop:8, display:"flex", justifyContent:"space-between" }}>
-                <span style={{ fontSize:14, fontWeight:700, color:C.black }}>Total del ticket</span>
+                <span style={{ fontSize:14, fontWeight:700, color:C.black }}>Total de entrada del ticket</span>
                 <span style={{ fontSize:16, fontWeight:900, color:C.ok }}>${previewTotal.toFixed(2)} USD</span>
               </div>
+              <div style={{ background:"rgba(255,255,255,0.6)", padding:"8px 10px", marginTop:4 }}>
+                <div style={{ fontSize:11, color:C.muted, marginBottom:3 }}>Fórmula</div>
+                <div style={{ fontSize:12, fontWeight:700, color:C.black }}>
+                  Base ${previewBase.toFixed(2)} + Otros ${previewOther.toFixed(2)} + Impuestos ${previewTax.toFixed(2)} = ${previewTotal.toFixed(2)} USD
+                </div>
+              </div>
+              {previewPieces > 0 && (
+                <div style={{ display:"flex", justifyContent:"space-between" }}>
+                  <span style={{ fontSize:12, color:C.muted }}>Promedio estimado por pieza</span>
+                  <span style={{ fontSize:13, fontWeight:700, color:C.terra }}>${averagePieceCost.toFixed(2)} USD</span>
+                </div>
+              )}
               <div style={{ display:"flex", justifyContent:"space-between" }}>
-                <span style={{ fontSize:12, color:C.muted }}>En MXN (TC: ${leer(ticket, "tipoCambio", "exchangeRate", STORE_CONFIG.exchangeRate)})</span>
+                <span style={{ fontSize:12, color:C.muted }}>En MXN ({previewTotal.toFixed(2)} × TC {previewRate.toFixed(2)})</span>
                 <span style={{ fontSize:13, fontWeight:700, color:C.terra }}>
-                  ${(previewTotal * (aNumero(leer(ticket, "tipoCambio", "exchangeRate", STORE_CONFIG.exchangeRate)) || STORE_CONFIG.exchangeRate)).toFixed(2)} MXN
+                  ${(previewTotal * previewRate).toFixed(2)} MXN
                 </span>
               </div>
             </div>
@@ -556,11 +689,25 @@ export function TicketDetail({ ticket, onBack, onNext }) {
           </Card>
         )}
 
-        <Btn
-          label={saving ? "Guardando…" : "Guardar y ver costos →"}
-          onClick={handleSave}
-          disabled={saving}
-        />
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+          <button onClick={onBack} style={{
+            padding:"12px",
+            background:C.white,
+            border:`1.5px solid ${C.border}`,
+            fontSize:12,
+            fontWeight:800,
+            cursor:"pointer",
+            color:C.black,
+            borderRadius:16,
+          }}>
+            Cancelar
+          </button>
+          <Btn
+            label={saving ? "Guardando…" : "Guardar y ver costos →"}
+            onClick={handleSave}
+            disabled={saving}
+          />
+        </div>
       </div>
     </div>
   );
@@ -569,38 +716,23 @@ export function TicketDetail({ ticket, onBack, onNext }) {
 // ─── PASO 3: RESUMEN DE COSTOS ────────────────────────────
 export function CostPreview({ ticket, onBack, onGenerate }) {
   const [generating, setGenerating] = useState(false);
-  const isLote = leer(ticket, "metodo", "method", "individual") === "lote";
-  const rate   = leer(ticket, "tipoCambio", "exchangeRate", STORE_CONFIG.exchangeRate);
-
-  // Calcular
-  let costedLines = [];
-  let loteResult  = null;
-
-  if (isLote) {
-    loteResult = costLote({
-      totalPieces:      leer(ticket, "totalPiezas", "totalPieces", 0),
-      ticketCost:       leer(ticket, "costoTicket", "ticketCost", 0),
-      ticketOtherCosts: leer(ticket, "otrosGastosTicket", "ticketOtherCosts", 0),
-      taxMode:          leer(ticket, "modoImpuesto", "taxMode", "pct"),
-      taxPct:           leer(ticket, "impuestoPct", "taxPct", 0),
-      taxFixed:         leer(ticket, "impuestoFijo", "taxFixed", 0),
-    });
-  } else {
-    costedLines = costIndividual({
-      lines:            leer(ticket, "lineas", "lines", []),
-      ticketOtherCosts: leer(ticket, "otrosGastosTicket", "ticketOtherCosts", 0),
-      taxMode:          leer(ticket, "modoImpuesto", "taxMode", "pct"),
-      taxPct:           leer(ticket, "impuestoPct", "taxPct", 0),
-      taxFixed:         leer(ticket, "impuestoFijo", "taxFixed", 0),
-    });
-  }
-
-  const totalPiezas = isLote
-    ? (leer(ticket, "totalPiezas", "totalPieces", 0) || 0)
-    : costedLines.reduce((a, l) => a + (parseInt(l.qty) || 0), 0);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+  const { isLote, rate, costedLines, loteResult, totalPiezas, previewTotal } = resumenCosteo(ticket);
 
   async function handleGenerate() {
+    setError("");
+    setSuccess("");
     setGenerating(true);
+
+    try {
+      const allInventory = await dbGetAll(COL.inventario);
+      const existingItems = allInventory.filter(item => item.ticketDocId === ticket.id);
+    if (existingItems.length > 0 && existingItems.length !== totalPiezas) {
+      setError(`Este ticket ya tiene ${existingItems.length} pieza(s) generadas y ahora calcula ${totalPiezas}. Para evitar duplicados no se volvió a generar.`);
+      setGenerating(false);
+      return;
+    }
 
     // Marcar ticket como costado
     await dbUpdate(COL.tickets, ticket.id, {
@@ -609,25 +741,22 @@ export function CostPreview({ ticket, onBack, onGenerate }) {
       costedAt:    new Date().toISOString(),
       costedLines: isLote ? [] : costedLines,
       loteResult,
-      costoTotalUSD: isLote
-        ? loteResult.totalCost
-        : costedLines.reduce((a, l) => a + (l.totalCostLine || 0), 0),
-      totalCostUSD: isLote
-        ? loteResult.totalCost
-        : costedLines.reduce((a, l) => a + (l.totalCostLine || 0), 0),
+      costoTotalUSD: previewTotal,
+      totalCostUSD: previewTotal,
       totalPiezas,
       totalPieces: totalPiezas,
     });
 
     const origen = leer(ticket, "origen", "origin", "usa");
     const esOrigenUSA = origen === "usa";
+    const fechaTicketProducto = ticket.fechaTicket || ticket.createdAt?.slice(0, 10) || hoyISO();
 
-    // Generar piezas en inventario con nuevos campos en español
-    if (isLote) {
+    // Generar piezas en inventario o actualizar las existentes para no duplicar.
+    if (existingItems.length === 0 && isLote) {
       for (let i = 0; i < totalPiezas; i++) {
         const invNum = await nextId("inventory");
         const skuNum = await nextId("sku");
-        await dbAdd(COL.inventario, {
+        await dbCreate(COL.inventario, padId(invNum, "INV-"), {
           // ── Identificadores
           idInterno:         padId(invNum, "INV-"),
           clave:             padId(skuNum, "OA-"),
@@ -642,7 +771,6 @@ export function CostPreview({ ticket, onBack, onGenerate }) {
           color:             "",
           genero:            "",
           marca:             "",
-          condicion:         "buena",
           descripcion:       "",
           foto:              "",
           fotos:             [],
@@ -660,22 +788,24 @@ export function CostPreview({ ticket, onBack, onGenerate }) {
           }),
 
           // ── Estado
-          esProvisional:     true,           // se actualiza al registrar envío
+          esProvisional:     esOrigenUSA,    // se actualiza al registrar envío
           estado:            "en_bodega",
           ubicacion:         esOrigenUSA ? "usa" : "bodega_scl",
           activo:            false,
           precio:            0,
           origen:            origen,
-          fechaIngreso:      new Date().toISOString().slice(0, 10),
+          fechaCompra:       fechaTicketProducto,
+          ticketLineId:      `lote-${i + 1}`,
+          ticketLineIndex:   i,
         });
       }
-    } else {
+    } else if (existingItems.length === 0) {
       for (const line of costedLines) {
         const qty = parseInt(line.qty) || 0;
         for (let i = 0; i < qty; i++) {
           const invNum = await nextId("inventory");
           const skuNum = await nextId("sku");
-          await dbAdd(COL.inventario, {
+        await dbCreate(COL.inventario, padId(invNum, "INV-"), {
             // ── Identificadores
             idInterno:         padId(invNum, "INV-"),
             clave:             padId(skuNum, "OA-"),
@@ -686,12 +816,11 @@ export function CostPreview({ ticket, onBack, onGenerate }) {
             // ── Descripción (se completa después en inventario)
             nombre:            line.descr,
             categoria:         line.cat || "Ropa",
-            talla:             "",
+            talla:             line.talla || "",
             color:             "",
-            genero:            "",
-            marca:             "",
-            condicion:         "buena",
-            descripcion:       "",
+            genero:            line.genero || "",
+            marca:             line.marca || "",
+            descripcion:       line.descripcion || "",
             foto:              "",
             fotos:             [],
 
@@ -714,17 +843,88 @@ export function CostPreview({ ticket, onBack, onGenerate }) {
             activo:            false,
             precio:            0,
             origen:            origen,
-            fechaIngreso:      new Date().toISOString().slice(0, 10),
+            fechaCompra:       fechaTicketProducto,
+            ticketLineId:      String(line.id || `${line.descr}-${line.cat}-${i + 1}`),
+            ticketLineIndex:   i,
+          });
+        }
+      }
+    } else if (isLote) {
+      for (const item of existingItems) {
+        await dbUpdate(COL.inventario, item.id, {
+          ticketOrigen: ticket.ticketId,
+          ticketDocId: ticket.id,
+          metodo: "lote",
+          origen,
+          fechaCompra: item.fechaCompra || fechaTicketProducto,
+          esProvisional: esOrigenUSA,
+          ...(esOrigenUSA ? {
+            costoUSD: loteResult.costUSD,
+            fletePorPrendaUSD: item.fletePorPrendaUSD || 0,
+            costoTotalUSD: loteResult.costUSD,
+            tipoCambio: rate,
+            costoMXN: loteResult.costUSD * rate,
+          } : {
+            costoMXN: loteResult.costUSD,
+            fleteMXN: item.fleteMXN || 0,
+          }),
+        });
+      }
+    } else {
+      const sortedItems = [...existingItems].sort((a, b) => {
+        const byCreated = String(a.createdAt || "").localeCompare(String(b.createdAt || ""));
+        return byCreated || String(a.id).localeCompare(String(b.id));
+      });
+      let cursor = 0;
+
+      for (const line of costedLines) {
+        const qty = parseInt(line.qty) || 0;
+        for (let i = 0; i < qty; i++) {
+          const item = sortedItems[cursor++];
+          if (!item) continue;
+          await dbUpdate(COL.inventario, item.id, {
+            ticketOrigen: ticket.ticketId,
+            ticketDocId: ticket.id,
+            metodo: "individual",
+            origen,
+            categoria: line.cat || item.categoria || "Ropa",
+            fechaCompra: item.fechaCompra || fechaTicketProducto,
+            esProvisional: esOrigenUSA,
+            ...(esOrigenUSA ? {
+              costoUSD: line.costUSD,
+              fletePorPrendaUSD: item.fletePorPrendaUSD || 0,
+              costoTotalUSD: line.costUSD,
+              tipoCambio: rate,
+              costoMXN: line.costUSD * rate,
+            } : {
+              costoMXN: line.costUSD,
+              fleteMXN: item.fleteMXN || 0,
+            }),
+            ticketLineId:      String(line.id || item.ticketLineId || `${line.descr}-${line.cat}-${i + 1}`),
+            ticketLineIndex:   i,
           });
         }
       }
     }
 
-    // Actualizar total de piezas en el ticket
-    await dbUpdate(COL.tickets, ticket.id, { totalPiezas, totalPieces: totalPiezas });
+      // Actualizar total de piezas en el ticket
+      await dbUpdate(COL.tickets, ticket.id, {
+        totalPiezas,
+        totalPieces: totalPiezas,
+        inventoryItemCount: totalPiezas,
+        inventoryGeneratedAt: new Date().toISOString(),
+      });
 
-    setGenerating(false);
-    onGenerate();
+      setSuccess(existingItems.length > 0
+        ? `Se actualizaron ${totalPiezas} pieza(s) de este ticket.`
+        : `Se generaron ${totalPiezas} pieza(s) en inventario.`);
+      await onGenerate?.();
+    } catch (e) {
+      console.error("Error al generar inventario del ticket:", e);
+      setError(e?.message || "Ocurrió un error al generar o actualizar inventario.");
+    } finally {
+      setGenerating(false);
+    }
   }
 
   return (
@@ -734,6 +934,11 @@ export function CostPreview({ ticket, onBack, onGenerate }) {
 
         <InfoBox type="warn">
           ⚠️ Estos son costos <strong>provisionales</strong> — sin el envío todavía. Se actualizan automáticamente cuando registres el envío.
+        </InfoBox>
+        <InfoBox type={leer(ticket, "estado", "status", "draft") === "costed" ? "info" : "terra"}>
+          {leer(ticket, "estado", "status", "draft") === "costed"
+            ? "Si este ticket ya fue generado antes, volver a confirmar actualizará costos en las piezas existentes y no creará duplicados."
+            : "Al confirmar por primera vez, este ticket creará sus piezas provisionales en inventario."}
         </InfoBox>
 
         {/* TC */}
@@ -802,25 +1007,50 @@ export function CostPreview({ ticket, onBack, onGenerate }) {
                   </div>
                 </div>
                 <div style={{ fontSize:10, color:C.muted, marginTop:4 }}>
-                  Verificación: {line.qty} × ${line.costUSD.toFixed(4)} = ${(line.qty * line.costUSD).toFixed(2)} ≈ ${line.totalCostLine.toFixed(2)} ✓
+                  Verificación: base ${line.subtotal.toFixed(2)} + otros ${line.otherAmt.toFixed(2)} + impuestos ${line.taxAmt.toFixed(2)} = total línea ${line.totalCostLine.toFixed(2)} USD. Luego ${line.totalCostLine.toFixed(2)} / ${line.qty} = ${line.costUSD.toFixed(4)} USD por pieza.
                 </div>
               </div>
             </Card>
           ))}
         </>}
 
-        <div style={{ marginTop:8 }}>
+        <div style={{ marginTop:8, display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+          <button onClick={onBack} style={{
+            padding:"12px",
+            background:C.white,
+            border:`1.5px solid ${C.border}`,
+            fontSize:12,
+            fontWeight:800,
+            cursor:"pointer",
+            color:C.black,
+            borderRadius:16,
+          }}>
+            Cancelar
+          </button>
           <Btn
             label={generating
               ? "Generando inventario…"
-              : `✓ Generar ${totalPiezas} pieza${totalPiezas !== 1 ? "s" : ""} en inventario`}
+              : `${leer(ticket, "estado", "status", "draft") === "costed" ? "↻ Actualizar" : "✓ Generar"} ${totalPiezas} pieza${totalPiezas !== 1 ? "s" : ""} en inventario`}
             onClick={handleGenerate}
             disabled={generating}
             color={C.ok}
           />
         </div>
+        {error && (
+          <Card style={{ marginTop:12, background:C.dangerFade, borderLeft:`3px solid ${C.danger}`, padding:"14px" }}>
+            <div style={{ fontSize:12, color:C.danger }}>❌ {error}</div>
+          </Card>
+        )}
+        {success && (
+          <Card style={{ marginTop:12, background:C.okFade, borderLeft:`3px solid ${C.ok}`, padding:"14px" }}>
+            <div style={{ fontSize:12, color:C.ok }}>✓ {success}</div>
+          </Card>
+        )}
         <div style={{ fontSize:11, color:C.muted, textAlign:"center", marginTop:10, lineHeight:1.6 }}>
-          Se crean {totalPiezas} artículos en bodega con costo provisional.<br/>
+          {leer(ticket, "estado", "status", "draft") === "costed"
+            ? `Se actualizarán ${totalPiezas} artículos ya vinculados a este ticket.`
+            : `Se crean ${totalPiezas} artículos en bodega con costo provisional.`}
+          <br/>
           El costo final se actualiza al registrar el envío.
         </div>
       </div>
@@ -829,7 +1059,7 @@ export function CostPreview({ ticket, onBack, onGenerate }) {
 }
 
 // ─── ORQUESTADOR ──────────────────────────────────────────
-export function TicketsScreen({ onBack }) {
+export function TicketsScreen({ onBack, onRefresh }) {
   const [view,   setView]   = useState("list");
   const [ticket, setTicket] = useState(null);
 
@@ -857,7 +1087,10 @@ export function TicketsScreen({ onBack }) {
     <CostPreview
       ticket={ticket}
       onBack={() => setView("detail")}
-      onGenerate={() => { setView("list"); }}
+      onGenerate={async () => {
+        if (onRefresh) await onRefresh();
+        setView("list");
+      }}
     />
   );
 

@@ -2,16 +2,16 @@ import { useState } from "react";
 
 // ─── TOKENS ───────────────────────────────────────────────
 export const C = {
-  black:"#0A0A0A",  white:"#FFFFFF",  cream:"#F8F4EF",
-  stone:"#E8E2DA",  warm:"#C8BAA8",
-  terra:"#C4622D",  terraD:"#8B3A18", terraL:"#FCF0E8",
-  gold:"#D4A847",   muted:"#7A6A5A",  border:"#E5DDD5",
-  ok:"#1A7A3A",     okFade:"#D4EDDA",
-  info:"#1A5A8A",   infoFade:"#D4E8F5",
-  warn:"#B85A00",   warnFade:"#FFF0D4",
-  danger:"#C0392B", dangerFade:"#FDECEA",
-  purple:"#7C3AED", purpleFade:"#EDE9FE",
-  sale:"#C0392B",
+  black:"#18212F",  white:"#FFFFFF",  cream:"#F4F7FB",
+  stone:"#E7EDF5",  warm:"#C8D3E2",
+  terra:"#2E5B93",  terraD:"#1E3C67", terraL:"#E9F1FB",
+  gold:"#C79B43",   muted:"#66758B",  border:"#D7E0EB",
+  ok:"#2F7A58",     okFade:"#DDEFE5",
+  info:"#275D8C",   infoFade:"#DFECF8",
+  warn:"#A06A1E",   warnFade:"#FBF0DB",
+  danger:"#B5483A", dangerFade:"#FBE7E3",
+  purple:"#5764A8", purpleFade:"#E9ECFB",
+  sale:"#214C7A",
 };
 
 // ─── TYPOGRAPHY ───────────────────────────────────────────
@@ -22,22 +22,34 @@ export const FONT = {
 
 // ─── ATOMS ────────────────────────────────────────────────
 export function Btn({ label, onClick, color, outline, disabled, small, icon, full=true }) {
+  const fill = color || C.black;
   return (
     <button onClick={!disabled ? onClick : undefined} style={{
-      padding:      small ? "9px 16px" : "14px 20px",
+      padding:      small ? "10px 16px" : "14px 20px",
       width:        full  ? "100%" : "auto",
       fontSize:     small ? 12 : 13,
-      fontWeight:   700,
-      letterSpacing:1.5,
+      fontWeight:   800,
+      letterSpacing:1.2,
       textTransform:"uppercase",
       cursor:       disabled ? "not-allowed" : "pointer",
-      background:   disabled ? "#CCC" : outline ? C.white : (color || C.black),
-      color:        disabled ? "#999" : outline ? (color || C.black) : C.white,
-      border:       outline  ? `2px solid ${color || C.black}` : "none",
-      boxShadow:    (!outline && !disabled) ? "0 4px 16px rgba(0,0,0,0.2)" : "none",
-      transition:   "all .2s",
+      background:   disabled
+        ? "#D9D0C5"
+        : outline
+          ? "rgba(255,252,248,0.92)"
+          : `linear-gradient(135deg, ${fill} 0%, ${outline ? fill : C.terraD} 100%)`,
+      color:        disabled ? "#8B7F73" : outline ? fill : C.white,
+      border:       outline  ? `1.5px solid ${fill}` : `1px solid rgba(255,255,255,0.12)`,
+      borderRadius: small ? 14 : 18,
+      boxShadow:    disabled
+        ? "none"
+        : outline
+          ? "0 8px 18px rgba(22,22,22,0.05)"
+          : "0 14px 30px rgba(22,22,22,0.16), inset 0 1px 0 rgba(255,255,255,0.12)",
+      transition:   "all .18s ease",
       fontFamily:   FONT.body,
       display:      "flex", alignItems:"center", justifyContent:"center", gap:8,
+      minHeight:    small ? 38 : 46,
+      backdropFilter:"blur(8px)",
     }}>
       {icon && <span style={{ fontSize:16, textTransform:"none" }}>{icon}</span>}
       {label}
@@ -61,7 +73,7 @@ export function WaBtn({ tel, msg, label, small }) {
   );
 }
 
-export function Inp({ label, value, onChange, placeholder, type="text", hint, required, small, readOnly }) {
+export function Inp({ label, value, onChange, placeholder, type="text", inputMode, step, hint, required, small, readOnly }) {
   return (
     <div style={{ marginBottom: small ? 10 : 16 }}>
       {label && (
@@ -71,6 +83,8 @@ export function Inp({ label, value, onChange, placeholder, type="text", hint, re
       )}
       <input
         type={type} value={value}
+        inputMode={inputMode}
+        step={step}
         onChange={e => !readOnly && onChange && onChange(e.target.value)}
         placeholder={placeholder} readOnly={readOnly}
         style={{
@@ -83,6 +97,92 @@ export function Inp({ label, value, onChange, placeholder, type="text", hint, re
         }}
       />
       {hint && <div style={{ fontSize:11, color:C.muted, marginTop:4 }}>{hint}</div>}
+    </div>
+  );
+}
+
+export function HelpTip({ text, title="Ayuda" }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div style={{ position:"relative", display:"inline-flex", alignItems:"center" }}>
+      <button
+        type="button"
+        onClick={() => setOpen(v => !v)}
+        style={{
+          width:22, height:22, borderRadius:"50%",
+          border:`1px solid ${open ? C.terra : C.border}`,
+          background:open ? C.terra : C.white,
+          color:open ? C.white : C.muted,
+          fontSize:11, fontWeight:800, cursor:"pointer",
+          display:"flex", alignItems:"center", justifyContent:"center",
+          padding:0, lineHeight:1,
+          boxShadow:open ? "0 8px 18px rgba(181,90,56,0.22)" : "0 2px 6px rgba(22,22,22,0.06)",
+          transition:"all .18s ease",
+        }}
+        aria-label={title}
+      >
+        ?
+      </button>
+      {open && (
+        <>
+          <button
+            type="button"
+            onClick={() => setOpen(false)}
+            aria-label="Cerrar ayuda"
+            style={{
+              position:"fixed",
+              inset:0,
+              zIndex:89,
+              background:"rgba(22,22,22,0.16)",
+              border:"none",
+              padding:0,
+              margin:0,
+              cursor:"default",
+            }}
+          />
+          <div style={{
+            position:"fixed",
+            top:"50%",
+            left:"50%",
+            transform:"translate(-50%, -50%)",
+            zIndex:90,
+            width:"min(320px, calc(100vw - 32px))",
+            maxWidth:"calc(100vw - 32px)",
+            background:"rgba(255,252,248,0.99)",
+            border:`1px solid ${C.border}`,
+            borderRadius:18,
+            boxShadow:"0 22px 48px rgba(22,22,22,0.18)",
+            padding:"14px 14px 12px",
+            backdropFilter:"blur(12px)",
+          }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:10, marginBottom:6 }}>
+              <div style={{ fontSize:11, fontWeight:800, color:C.black }}>{title}</div>
+              <button
+                type="button"
+                onClick={() => setOpen(false)}
+                aria-label="Cerrar"
+                style={{
+                  width:22,
+                  height:22,
+                  borderRadius:"50%",
+                  border:`1px solid ${C.border}`,
+                  background:C.white,
+                  color:C.muted,
+                  fontSize:12,
+                  cursor:"pointer",
+                  display:"flex",
+                  alignItems:"center",
+                  justifyContent:"center",
+                  padding:0,
+                }}
+              >
+                ×
+              </button>
+            </div>
+            <div style={{ fontSize:11, color:C.muted, lineHeight:1.6 }}>{text}</div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -131,9 +231,18 @@ export function Toggle({ on, onChange, label }) {
 export function Badge({ c, bg, label, small }) {
   return (
     <span style={{
-      fontSize: small ? 9 : 10, fontWeight:700,
-      padding: small ? "2px 7px" : "3px 10px",
-      borderRadius:20, color:c, background:bg, whiteSpace:"nowrap",
+      fontSize: small ? 9 : 10,
+      fontWeight:800,
+      padding: small ? "4px 8px" : "5px 11px",
+      borderRadius:999,
+      color:c,
+      background:bg,
+      whiteSpace:"nowrap",
+      letterSpacing:0.3,
+      border:`1px solid ${c}20`,
+      boxShadow:"inset 0 1px 0 rgba(255,255,255,0.6), 0 4px 10px rgba(24,33,47,0.06)",
+      display:"inline-flex",
+      alignItems:"center",
     }}>{label}</span>
   );
 }
@@ -218,7 +327,7 @@ export function EmptyState({ icon, title, sub }) {
   );
 }
 
-// ─── PIN LOCK ─────────────────────────────────────────────
+// ─── PIN LOCK Lo dejé por si lo uso despues─────────────────────────────────────────────
 export function PinLock({ correct, onUnlock, title="Acceso" }) {
   const [pin,   setPin]   = useState("");
   const [err,   setErr]   = useState(false);
