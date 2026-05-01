@@ -170,17 +170,47 @@ export function applyShipmentCost(items, shipmentCostUSD) {
     finalCostUSD: round2(i.costUSD || 0),
   }));
 
-  const totalValue = items.reduce((a, i) => a + (Number(i.costUSD) || 0), 0);
+  const safeItems = items.map(i => ({
+    ...i,
+    costUSD: Number(i.costUSD) || 0,
+  }));
+  const zeroCostItems = safeItems.filter(i => i.costUSD <= 0);
+  const positiveCostItems = safeItems.filter(i => i.costUSD > 0);
 
-  return items.map(i => {
-    const weight     = totalValue > 0
-      ? (Number(i.costUSD) || 0) / totalValue
-      : 1 / items.length;
-    const freightUSD = round2(shipmentCostUSD * weight);
+  // Si hay piezas donadas o con costo 0, cada una recibe al menos el promedio simple
+  // del flete por pieza. El resto se reparte por valor entre las piezas con costo.
+  const averageShare = shipmentCostUSD / safeItems.length;
+  const zeroPool = round2(averageShare * zeroCostItems.length);
+  const remainingPool = round2(shipmentCostUSD - zeroPool);
+  const zeroAllocations = new Map();
+  let remainingZeroPool = zeroPool;
+  zeroCostItems.forEach((item, idx) => {
+    const share = idx === zeroCostItems.length - 1 ? round2(remainingZeroPool) : round2(averageShare);
+    remainingZeroPool = round2(remainingZeroPool - share);
+    zeroAllocations.set(item.id, share);
+  });
+
+  const positiveAllocations = new Map();
+  if (positiveCostItems.length) {
+    const shares = allocateProportional(
+      remainingPool > 0 ? remainingPool : shipmentCostUSD,
+      positiveCostItems.map(i => i.costUSD)
+    );
+    positiveCostItems.forEach((item, idx) => {
+      positiveAllocations.set(item.id, shares[idx] || 0);
+    });
+  }
+
+  return safeItems.map(i => {
+    const freightUSD = round2(
+      zeroAllocations.get(i.id) ??
+      positiveAllocations.get(i.id) ??
+      0
+    );
     return {
       ...i,
       freightUSD,
-      finalCostUSD: round2((Number(i.costUSD) || 0) + freightUSD),
+      finalCostUSD: round2(i.costUSD + freightUSD),
     };
   });
 }

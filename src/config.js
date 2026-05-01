@@ -74,6 +74,7 @@ export const COL = {
   inventario:   "inventario",
   envios:       "envios",
   pedidos:      "orders",
+  ventas:       "ventas",
   vendedores:   "vendors",
   repartidores: "drivers",
   contadores:   "contadores",
@@ -121,7 +122,6 @@ export const UBICACIONES = [
   { value:"en_transito", label:"En transito - envio registrado, en camino" },
   { value:"bodega_scl", label:"Bodega Santa Catarina Loxicha" },
   { value:"bodega_mia", label:"Bodega Miahuatlan" },
-  { value:"vendido", label:"Vendido" },
 ];
 
 // ESTADOS DEL TICKET
@@ -134,6 +134,7 @@ export const TICKET_STATUS = {
 // ESTADOS DEL INVENTARIO
 export const INVENTORY_STATUS = {
   en_bodega:  { label:"En bodega", color:"#1A5A8A", bg:"#D4E8F5", e:"📦" },
+  disponible: { label:"Disponible", color:"#0F766E", bg:"#CCFBF1", e:"🧾" },
   en_venta:   { label:"En venta", color:"#1A7A3A", bg:"#D4EDDA", e:"🛍️" },
   vendido:    { label:"Vendido", color:"#7C3AED", bg:"#EDE9FE", e:"✅" },
   reservado:  { label:"Reservado", color:"#B85A00", bg:"#FFF0D4", e:"⏳" },

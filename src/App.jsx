@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { C, FONT, Btn, WaBtn, Inp, Card, SectionTitle, TopBar,
          InfoBox, Badge, Loading, EmptyState, StatsRow, OfflineBanner } from "./ui.jsx";
-import { initFirebase, adminSignIn, adminSignOut, onAdminAuthChanged, dbAdd, dbUpdate, dbGetAll, dbWhere, dbListen } from "./firebase.js";
+import { initFirebase, adminSignIn, adminSignOut, onAdminAuthChanged, dbAdd, dbCreate, dbGet, dbUpdate, dbGetAll, dbWhere, dbListen, nextId, padId } from "./firebase.js";
 import { TicketsScreen } from "./Tickets.jsx";
 import { ShipmentsScreen } from "./Shipments.jsx";
 import { InventoryScreen } from "./Inventory.jsx";
@@ -22,6 +22,13 @@ function terminoNatural(value){
   if(!raw)return"";
   const conocidos={unisexo:"Unisex",unisex:"Unisex",boleto:"Ticket",boletos:"Tickets",ticket:"Ticket",tickets:"Tickets"};
   return conocidos[raw.toLowerCase()]||raw;
+}
+
+function estadoDisponibleDesdeProducto(item){
+  const datosBaseCompletos = Boolean(item?.nombre && item?.foto && item?.color);
+  const completo = Boolean(datosBaseCompletos && (Number(item?.precio) || 0) > 0);
+  if (!completo || item?.esProvisional) return { estado:"en_bodega", activo:false };
+  return { estado:"en_venta", activo:true };
 }
 
 // ─── GPS ──────────────────────────────────────────────────
@@ -789,6 +796,294 @@ function AdminDashboard({pedidos,inventario,onNav}){
   );
 }
 
+function ReportsScreen({ ventas, inventario, onBack }) {
+  const [rango, setRango] = useState("30d");
+  const hoy = new Date();
+  const hoyIso = hoy.toISOString().slice(0, 10);
+  const desde7 = new Date(hoy); desde7.setDate(desde7.getDate() - 7);
+  const desde30 = new Date(hoy); desde30.setDate(desde30.getDate() - 30);
+
+  const ventasFiltradas = ventas.filter(v => {
+    const fecha = String(v.fechaVenta || v.createdAt || "").slice(0, 10);
+    if (!fecha) return false;
+    if (rango === "hoy") return fecha === hoyIso;
+    if (rango === "7d") return fecha >= desde7.toISOString().slice(0, 10);
+    if (rango === "30d") return fecha >= desde30.toISOString().slice(0, 10);
+    return true;
+  });
+
+  const lineasVenta = ventasFiltradas.flatMap(venta => {
+    if (Array.isArray(venta.items) && venta.items.length) {
+      return venta.items.map(item => ({
+        ...item,
+        ventaId: venta.ventaId || venta.id,
+        fechaVenta: venta.fechaVenta || venta.createdAt,
+        canalVenta: venta.canalVenta,
+        metodoPago: venta.metodoPago,
+        vendedor: venta.vendedor,
+        cliente: venta.cliente,
+      }));
+    }
+    return [{
+      ...venta,
+      ventaId: venta.ventaId || venta.id,
+      precioVenta: Number(venta.precioVenta) || 0,
+      utilidad: Number(venta.utilidad) || 0,
+    }];
+  });
+
+  const totalVentas = lineasVenta.reduce((acc, v) => acc + (Number(v.precioVenta) || 0), 0);
+  const totalUtilidad = lineasVenta.reduce((acc, v) => acc + (Number(v.utilidad) || 0), 0);
+  const piezasVendidas = lineasVenta.length;
+  const ticketPromedio = piezasVendidas ? totalVentas / piezasVendidas : 0;
+  const margenPromedio = totalVentas > 0 ? (totalUtilidad / totalVentas) * 100 : 0;
+  const disponibles = inventario.filter(p => p.estado === "disponible").length;
+  const enVenta = inventario.filter(p => p.estado === "en_venta").length;
+  const enBodega = inventario.filter(p => p.estado === "en_bodega").length;
+  const reservados = inventario.filter(p => p.estado === "reservado").length;
+  const vendidos = inventario.filter(p => p.estado === "vendido").length;
+  const provisionales = inventario.filter(p => p.esProvisional).length;
+
+  const ventasPorCanal = Object.entries(
+    lineasVenta.reduce((acc, venta) => {
+      const key = venta.canalVenta || "sin_canal";
+      acc[key] = (acc[key] || 0) + (Number(venta.precioVenta) || 0);
+      return acc;
+    }, {})
+  ).sort((a, b) => b[1] - a[1]);
+
+  const ventasPorMetodo = Object.entries(
+    lineasVenta.reduce((acc, venta) => {
+      const key = venta.metodoPago || "sin_metodo";
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, {})
+  ).sort((a, b) => b[1] - a[1]);
+
+  const topProductos = Object.entries(
+    lineasVenta.reduce((acc, venta) => {
+      const key = venta.nombre || "Producto sin nombre";
+      acc[key] = acc[key] || { nombre:key, piezas:0, ventas:0 };
+      acc[key].piezas += 1;
+      acc[key].ventas += Number(venta.precioVenta) || 0;
+      return acc;
+    }, {})
+  ).map(([, value]) => value).sort((a, b) => b.ventas - a.ventas).slice(0, 5);
+
+  const rangoLabel = (
+    rango === "hoy" ? "Hoy" :
+    rango === "7d" ? "Ultimos 7 dias" :
+    rango === "30d" ? "Ultimos 30 dias" :
+    "Historico completo"
+  );
+
+  return (
+    <div style={{background:C.cream,minHeight:"100%"}}>
+      <TopBar title="Reportes" subtitle="Ventas e inventario" onBack={onBack}/>
+      <div style={{padding:"0 16px 32px"}}>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap",paddingTop:14,marginBottom:14}}>
+          {[{id:"hoy",label:"Hoy"},{id:"7d",label:"7 dias"},{id:"30d",label:"30 dias"},{id:"todo",label:"Todo"}].map(op => (
+            <button key={op.id} onClick={() => setRango(op.id)} style={{
+              padding:"8px 12px", border:"none", cursor:"pointer",
+              background:rango===op.id?C.black:C.white,
+              color:rango===op.id?C.white:C.muted,
+              fontSize:11, fontWeight:700, letterSpacing:.5, textTransform:"uppercase",
+            }}>
+              {op.label}
+            </button>
+          ))}
+        </div>
+
+        <Card style={{marginBottom:16,background:C.stone,padding:"12px 14px"}}>
+          <div style={{fontSize:10,fontWeight:700,color:C.muted,letterSpacing:1.5,textTransform:"uppercase",marginBottom:4}}>
+            Rango activo
+          </div>
+          <div style={{fontSize:16,fontWeight:800,color:C.black,marginBottom:2}}>
+            {rangoLabel}
+          </div>
+          <div style={{fontSize:11,color:C.muted}}>
+            {ventasFiltradas.length} operacion(es) · {lineasVenta.length} pieza(s) registradas en este periodo.
+          </div>
+        </Card>
+
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:18}}>
+          {[ 
+            {e:"💰", l:"Ventas", v:mxn(totalVentas), c:C.terra},
+            {e:"📈", l:"Utilidad", v:mxn(totalUtilidad), c:C.ok},
+            {e:"🏷️", l:"Piezas vendidas", v:piezasVendidas, c:C.purple},
+            {e:"🧾", l:"Promedio", v:mxn(ticketPromedio), c:C.info},
+          ].map(s => (
+            <Card key={s.l} style={{borderLeft:`3px solid ${s.c}`,padding:12}}>
+              <div style={{fontSize:20}}>{s.e}</div>
+              <div style={{fontSize:20,fontWeight:900,color:C.black,fontFamily:FONT.display,marginTop:4}}>{s.v}</div>
+              <div style={{fontSize:11,color:C.muted}}>{s.l}</div>
+            </Card>
+          ))}
+        </div>
+
+        <Card style={{marginBottom:18,padding:"12px 14px",borderLeft:`3px solid ${C.ok}`}}>
+          <div style={{fontSize:10,fontWeight:700,color:C.muted,letterSpacing:1.5,textTransform:"uppercase",marginBottom:4}}>
+            Margen promedio estimado
+          </div>
+          <div style={{fontSize:22,fontWeight:900,color:C.ok,fontFamily:FONT.display}}>
+            {margenPromedio.toFixed(1)}%
+          </div>
+          <div style={{fontSize:11,color:C.muted,marginTop:2}}>
+            Se calcula con la utilidad registrada sobre el total vendido del rango.
+          </div>
+        </Card>
+
+        <SectionTitle>Inventario actual</SectionTitle>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10,marginBottom:18}}>
+          {[
+            {l:"Disponibles", v:disponibles, c:"#0F766E"},
+            {l:"En venta", v:enVenta, c:C.ok},
+            {l:"Vendidos", v:vendidos, c:C.purple},
+            {l:"En bodega", v:enBodega, c:C.info},
+            {l:"Reservados", v:reservados, c:C.warn},
+          ].map(s => (
+            <Card key={s.l} style={{padding:12}}>
+              <div style={{fontSize:18,fontWeight:900,color:s.c}}>{s.v}</div>
+              <div style={{fontSize:11,color:C.muted}}>{s.l}</div>
+            </Card>
+          ))}
+        </div>
+
+        <Card style={{marginBottom:18,padding:"12px 14px",borderLeft:`3px solid ${C.terra}`,background:C.terraL}}>
+          <div style={{fontSize:10,fontWeight:700,color:C.terraD,letterSpacing:1.5,textTransform:"uppercase",marginBottom:4}}>
+            Alerta de costeo
+          </div>
+          <div style={{fontSize:18,fontWeight:900,color:C.terra}}>
+            {provisionales} provisional{provisionales !== 1 ? "es" : ""}
+          </div>
+          <div style={{fontSize:11,color:C.muted,marginTop:4,lineHeight:1.6}}>
+            Esta cantidad no es extra. Los productos provisionales ya están incluidos dentro de <strong>En bodega</strong> o del estado que les corresponda; aquí solo se muestran como alerta porque aún no tienen costo final de envío.
+          </div>
+        </Card>
+
+        <SectionTitle>Canales y pagos</SectionTitle>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:18}}>
+          <Card style={{padding:12}}>
+            <div style={{fontSize:11,fontWeight:700,color:C.black,marginBottom:8}}>Ventas por canal</div>
+            {ventasPorCanal.length === 0 && <div style={{fontSize:11,color:C.muted}}>Sin datos en este rango.</div>}
+            {ventasPorCanal.slice(0, 5).map(([canal, monto]) => (
+              <div key={canal} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:`1px solid ${C.border}`}}>
+                <span style={{fontSize:11,color:C.black}}>{canal}</span>
+                <span style={{fontSize:11,fontWeight:700,color:C.terra}}>{mxn(monto)}</span>
+              </div>
+            ))}
+          </Card>
+          <Card style={{padding:12}}>
+            <div style={{fontSize:11,fontWeight:700,color:C.black,marginBottom:8}}>Metodos de pago</div>
+            {ventasPorMetodo.length === 0 && <div style={{fontSize:11,color:C.muted}}>Sin datos en este rango.</div>}
+            {ventasPorMetodo.slice(0, 5).map(([metodo, total]) => (
+              <div key={metodo} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:`1px solid ${C.border}`}}>
+                <span style={{fontSize:11,color:C.black}}>{metodo}</span>
+                <span style={{fontSize:11,fontWeight:700,color:C.info}}>{total} venta(s)</span>
+              </div>
+            ))}
+          </Card>
+        </div>
+
+        <SectionTitle>Top productos</SectionTitle>
+        <Card style={{padding:12,marginBottom:18}}>
+          {topProductos.length === 0 && <div style={{fontSize:11,color:C.muted}}>Aun no hay suficientes ventas para este resumen.</div>}
+          {topProductos.map((prod, idx) => (
+            <div key={`${prod.nombre}-${idx}`} style={{display:"flex",justifyContent:"space-between",gap:10,padding:"7px 0",borderBottom:idx<topProductos.length-1?`1px solid ${C.border}`:"none"}}>
+              <div>
+                <div style={{fontSize:12,fontWeight:700,color:C.black}}>{prod.nombre}</div>
+                <div style={{fontSize:11,color:C.muted}}>{prod.piezas} pieza(s)</div>
+              </div>
+              <div style={{fontSize:12,fontWeight:800,color:C.terra}}>{mxn(prod.ventas)}</div>
+            </div>
+          ))}
+        </Card>
+
+        <SectionTitle>Ventas recientes</SectionTitle>
+        {ventasFiltradas.length === 0 && <EmptyState icon="📊" title="Sin ventas" sub="Aun no hay ventas registradas en este rango"/>}
+        {ventasFiltradas.slice(0, 20).map((venta, idx) => (
+          <Card key={venta.id || venta.ventaId || idx} style={{marginBottom:10,borderLeft:`3px solid ${C.terra}`}}>
+            <div style={{display:"flex",justifyContent:"space-between",gap:10}}>
+              <div>
+                <div style={{fontSize:13,fontWeight:700,color:C.black}}>
+                  {Array.isArray(venta.items) && venta.items.length
+                    ? `Venta multiple · ${venta.items.length} producto(s)`
+                    : (venta.nombre || "Producto vendido")}
+                </div>
+                <div style={{fontSize:11,color:C.muted}}>
+                  {venta.ventaId || venta.id}
+                  {!Array.isArray(venta.items) || !venta.items.length ? ` · ${venta.clave || "Sin SKU"}` : ""}
+                </div>
+                <div style={{fontSize:11,color:C.muted,marginTop:2}}>
+                  {venta.fechaVenta || "Sin fecha"} · {venta.canalVenta || "Canal no indicado"} · {venta.metodoPago || "Pago no indicado"}
+                </div>
+                {(venta.vendedor || venta.cliente) && (
+                  <div style={{fontSize:11,color:C.muted,marginTop:2}}>
+                    {[venta.vendedor && `Vendio: ${venta.vendedor}`, venta.cliente && `Cliente: ${venta.cliente}`].filter(Boolean).join(" · ")}
+                  </div>
+                )}
+              </div>
+              <div style={{textAlign:"right"}}>
+                <div style={{fontSize:14,fontWeight:800,color:C.sale}}>
+                  {mxn(Array.isArray(venta.items) && venta.items.length ? (venta.totalVenta || 0) : (venta.precioVenta || 0))}
+                </div>
+                <div style={{fontSize:11,color:(Number(venta.utilidad) || 0) >= 0 ? C.ok : C.warn}}>
+                  Utilidad {mxn(venta.utilidad || 0)}
+                </div>
+              </div>
+            </div>
+            {Array.isArray(venta.items) && venta.items.length > 0 ? (
+              <>
+                <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:8}}>
+                  {venta.items.slice(0, 6).map((item, itemIdx) => (
+                    <span key={`${item.clave || item.idInterno || itemIdx}`} style={{
+                      fontSize:10,
+                      fontWeight:700,
+                      padding:"3px 8px",
+                      borderRadius:20,
+                      background:C.stone,
+                      color:C.black,
+                    }}>
+                      {item.clave || item.idInterno || "Sin SKU"}
+                    </span>
+                  ))}
+                  {venta.items.length > 6 && (
+                    <span style={{fontSize:10,fontWeight:700,padding:"3px 8px",borderRadius:20,background:C.terraL,color:C.terra}}>
+                      +{venta.items.length - 6} más
+                    </span>
+                  )}
+                </div>
+                <div style={{fontSize:11,color:C.muted,marginTop:8,lineHeight:1.6}}>
+                  {venta.items.slice(0, 3).map(item => item.nombre || item.clave || "Producto").join(" · ")}
+                  {venta.items.length > 3 ? ` +${venta.items.length - 3} más` : ""}
+                </div>
+              </>
+            ) : (
+              <div style={{display:"flex",gap:8,alignItems:"center",marginTop:8,flexWrap:"wrap"}}>
+                <span style={{
+                  fontSize:10,
+                  fontWeight:700,
+                  padding:"3px 8px",
+                  borderRadius:20,
+                  background:C.stone,
+                  color:C.black,
+                }}>
+                  {venta.clave || "Sin SKU"}
+                </span>
+                {(venta.categoria || venta.marca) && (
+                  <span style={{fontSize:11,color:C.muted}}>
+                    {[venta.marca, venta.categoria].filter(Boolean).join(" · ")}
+                  </span>
+                )}
+              </div>
+            )}
+          </Card>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ─── ADMIN PEDIDOS ────────────────────────────────────────
 function AdminPedidos({pedidos,onActualizarEstado,onBack}){
   const[filtro,setFiltro]=useState("todos");
@@ -863,7 +1158,7 @@ function AdminPedidos({pedidos,onActualizarEstado,onBack}){
 }
 
 // ─── REPARTIDOR ───────────────────────────────────────────
-function AppRepartidor({onBack}){
+function AppRepartidor({onBack,onActualizarEstado}){
   const[pedidos,setPedidos]=useState([]);
   const[cargando,setCargando]=useState(true);
   const[telefono,setTelefono]=useState("");
@@ -902,8 +1197,8 @@ function AppRepartidor({onBack}){
               <div style={{fontSize:12,color:C.muted,marginBottom:6}}>📞 {o.cliente?.telefono} · {o.metodoPago==="cod"?`💵 Cobrar ${mxn(o.total)} MXN`:"📲 Ya pagó"}</div>
               {articulos.length>0&&<div style={{background:C.stone,padding:"8px 10px",marginBottom:10,fontSize:12,color:C.black}}>{articulos.map(i=>i.nombre+(i.talla?" T:"+i.talla:"")).join(" · ")}</div>}
               <div style={{display:"flex",gap:8}}>
-                {o.status!=="en_ruta"&&<button onClick={()=>dbUpdate(COL.pedidos,o.id,{status:"en_ruta"})} style={{flex:1,padding:"10px",background:C.terra,color:C.white,border:"none",fontSize:12,fontWeight:700,cursor:"pointer"}}>🛵 Salir a entregar</button>}
-                {o.status==="en_ruta"&&<button onClick={()=>dbUpdate(COL.pedidos,o.id,{status:"entregado",entregadoEn:new Date().toISOString()})} style={{flex:1,padding:"10px",background:C.ok,color:C.white,border:"none",fontSize:12,fontWeight:700,cursor:"pointer"}}>✅ Entregado</button>}
+                {o.status!=="en_ruta"&&<button onClick={()=>onActualizarEstado(o.id,"en_ruta")} style={{flex:1,padding:"10px",background:C.terra,color:C.white,border:"none",fontSize:12,fontWeight:700,cursor:"pointer"}}>🛵 Salir a entregar</button>}
+                {o.status==="en_ruta"&&<button onClick={()=>onActualizarEstado(o.id,"entregado")} style={{flex:1,padding:"10px",background:C.ok,color:C.white,border:"none",fontSize:12,fontWeight:700,cursor:"pointer"}}>✅ Entregado</button>}
                 <WaBtn small tel={o.cliente?.telefono} msg={`Hola ${o.cliente?.nombre}! Soy el repartidor de CASI 🛵. Voy en camino a ${o.zona?.name}.`} label="Avisar"/>
               </div>
             </Card>
@@ -973,11 +1268,21 @@ export default function App(){
   const[tabTienda,setTabTienda]=useState("store");
   const[pedidos,setPedidos]=useState([]);
   const[inventario,setInventario]=useState([]);
+  const[ventas,setVentas]=useState([]);
   const[fbOk,setFbOk]=useState(false);
   const[listo,setListo]=useState(false);
   const[adminUser,setAdminUser]=useState(null);
   const[authReady,setAuthReady]=useState(!STORE_CONFIG.adminAuthEnabled);
   const unsubRef=useRef(null);
+
+  async function refreshAdminData(){
+    const [inv, sales] = await Promise.all([
+      dbGetAll(COL.inventario,"createdAt","desc").catch(()=>[]),
+      dbGetAll(COL.ventas,"createdAt","desc").catch(()=>[]),
+    ]);
+    setInventario(inv);
+    setVentas(sales);
+  }
 
   useEffect(()=>{
     const l=document.createElement("link");
@@ -1031,12 +1336,124 @@ export default function App(){
       return;
     }
     unsubRef.current=dbListen(COL.pedidos,data=>setPedidos(data));
-    dbGetAll(COL.inventario,"createdAt","desc").then(setInventario).catch(()=>setInventario([]));
+    Promise.resolve().then(refreshAdminData);
     return()=>{if(unsubRef.current)unsubRef.current();};
   },[modo,adminUser]);
 
   async function guardarPedido(pedido){try{await dbAdd(COL.pedidos,pedido);}catch(e){console.error(e);}}
-  async function actualizarEstado(id,status){try{await dbUpdate(COL.pedidos,id,{status});}catch(e){console.error(e);}}
+  async function actualizarEstado(id,status){
+    try{
+      const pedido = pedidos.find(o => o.id === id) || await dbGet(COL.pedidos, id);
+      if(!pedido){
+        await dbUpdate(COL.pedidos,id,{status});
+        return;
+      }
+
+      const itemIds = (pedido.carrito||[]).map(i => i.id).filter(Boolean);
+      const inventoryMap = new Map(inventario.map(item => [item.id, item]));
+      const shouldReserve = ["confirmado","preparando","en_ruta"].includes(status);
+      const shouldRelease = status === "cancelado";
+      const shouldSell = status === "entregado";
+
+      for (const itemId of itemIds) {
+        const item = inventoryMap.get(itemId) || await dbGet(COL.inventario, itemId);
+        if (!item) continue;
+
+        if (shouldReserve) {
+          if (item.estado === "reservado" && item.reservedOrderId === id) {
+            continue;
+          }
+          if (item.estado === "reservado" && item.reservedOrderId && item.reservedOrderId !== id) {
+            continue;
+          }
+          if (item.estado !== "vendido") {
+            await dbUpdate(COL.inventario, itemId, {
+              estado: "reservado",
+              activo: false,
+              reservedOrderId: id,
+              reservedAt: new Date().toISOString(),
+              estadoPrevioReserva: item.estadoPrevioReserva || item.estado || "en_venta",
+              activoPrevioReserva: item.activoPrevioReserva !== undefined ? item.activoPrevioReserva : (item.activo !== undefined ? item.activo : true),
+            });
+          }
+          continue;
+        }
+
+        if (shouldRelease) {
+          if (item.estado === "reservado" && item.reservedOrderId === id) {
+            const restore = estadoDisponibleDesdeProducto(item);
+            await dbUpdate(COL.inventario, itemId, {
+              estado: item.estadoPrevioReserva || restore.estado,
+              activo: item.activoPrevioReserva !== undefined ? item.activoPrevioReserva : restore.activo,
+              reservedOrderId: "",
+              reservedAt: "",
+              estadoPrevioReserva: "",
+              activoPrevioReserva: null,
+            });
+          }
+          continue;
+        }
+
+        if (shouldSell) {
+          let ventaId = item.ventaId || "";
+          if (!ventaId) {
+            const saleNum = await nextId("sale");
+            ventaId = padId(saleNum, "VEN-");
+            const ventaPrecio = Number(item.precio || 0);
+            const costoMXN = Number(item.costoMXN || 0);
+            await dbCreate(COL.ventas, ventaId, {
+              ventaId,
+              productoId: item.id,
+              clave: item.clave || "",
+              idInterno: item.idInterno || "",
+              ticketOrigen: item.ticketOrigen || "",
+              shipmentId: item.shipmentId || "",
+              nombre: item.nombre || "",
+              categoria: item.categoria || "",
+              marca: item.marca || "",
+              talla: item.talla || "",
+              genero: terminoNatural(item.genero || ""),
+              precioVenta: ventaPrecio,
+              costoMXN,
+              utilidad: Number((ventaPrecio - costoMXN).toFixed(2)),
+              fechaVenta: new Date().toISOString().slice(0, 10),
+              vendidoAt: new Date().toISOString(),
+              metodoPago: pedido.metodoPago === "cod" ? "efectivo" : "transferencia",
+              canalVenta: "tienda_online",
+              vendedor: "",
+              cliente: pedido.cliente?.nombre || "",
+              nota: `Pedido ${pedido.id}`,
+              origen: "pedido_online",
+              pedidoId: pedido.id,
+            });
+          }
+
+          await dbUpdate(COL.inventario, itemId, {
+            estado: "vendido",
+            activo: false,
+            fechaVenta: new Date().toISOString().slice(0, 10),
+            vendidoAt: new Date().toISOString(),
+            metodoVenta: "pedido_online",
+            metodoPagoVenta: pedido.metodoPago === "cod" ? "efectivo" : "transferencia",
+            canalVenta: "tienda_online",
+            clienteVenta: pedido.cliente?.nombre || "",
+            notaVenta: `Pedido ${pedido.id}`,
+            ventaId,
+            reservedOrderId: id,
+          });
+        }
+      }
+
+      const extra =
+        shouldReserve ? { reservadoEn: new Date().toISOString() } :
+        shouldRelease ? { liberadoEn: new Date().toISOString() } :
+        shouldSell ? { entregadoEn: new Date().toISOString() } :
+        {};
+
+      await dbUpdate(COL.pedidos,id,{status,...extra});
+      await refreshAdminData();
+    }catch(e){console.error(e);}
+  }
 
   const alertas=pedidos.filter(o=>["nuevo","verificando"].includes(o.status)).length;
 
@@ -1051,7 +1468,7 @@ export default function App(){
   );
 
   const MODOS=[{id:"store",label:"🛍️ Tienda"},{id:"driver",label:"🛵 Repartidor"},{id:"vendor",label:"🏪 Vendedor"},{id:"admin",label:"👑 Admin"}];
-  const TABS_ADMIN=[{id:"dashboard",label:"Inicio"},{id:"orders",label:`Pedidos${alertas>0?" ("+alertas+")":""}`},{id:"tickets",label:"Tickets"},{id:"shipments",label:"Envíos"},{id:"inventory",label:"Inventario"},{id:"drivers",label:"Repartos"},{id:"vendors",label:"Vendedores"}];
+  const TABS_ADMIN=[{id:"dashboard",label:"Inicio"},{id:"orders",label:`Pedidos${alertas>0?" ("+alertas+")":""}`},{id:"tickets",label:"Tickets"},{id:"shipments",label:"Envíos"},{id:"inventory",label:"Inventario"},{id:"reports",label:"Reportes"},{id:"drivers",label:"Repartos"},{id:"vendors",label:"Vendedores"}];
   const TABS_TIENDA=[{id:"store",label:"Tienda",icon:"◈"},{id:"orders",label:"Pedidos",icon:"◎"}];
 
   function renderContenido(){
@@ -1059,7 +1476,7 @@ export default function App(){
       if(tabTienda==="store")return<Store onOrder={guardarPedido}/>;
       if(tabTienda==="orders")return<MisPedidos onBack={()=>setTabTienda("store")}/>;
     }
-    if(modo==="driver")return<AppRepartidor onBack={()=>setModo("store")}/>;
+    if(modo==="driver")return<AppRepartidor onBack={()=>setModo("store")} onActualizarEstado={actualizarEstado}/>;
     if(modo==="vendor")return<AppVendedor onBack={()=>setModo("store")}/>;
     if(modo==="admin"){
       if(STORE_CONFIG.adminAuthEnabled && !authReady)return<Loading message="Preparando acceso admin..."/>;
@@ -1068,13 +1485,14 @@ export default function App(){
       if(tabAdmin==="orders")return<AdminPedidos pedidos={pedidos} onActualizarEstado={actualizarEstado} onBack={()=>setTabAdmin("dashboard")}/>;
       if(tabAdmin==="tickets")return<TicketsScreen
           onBack={()=>setTabAdmin("dashboard")}
-          onRefresh={async()=>{const inv=await dbGetAll(COL.inventario,"createdAt","desc");setInventario(inv);}}
+          onRefresh={refreshAdminData}
         />;
       if(tabAdmin==="shipments")return<ShipmentsScreen onBack={()=>setTabAdmin("dashboard")}/>;
       if(tabAdmin==="inventory")return<InventoryScreen
           inventory={inventario}
-          onRefresh={async()=>{const inv=await dbGetAll(COL.inventario,"createdAt","desc");setInventario(inv);}}
+          onRefresh={refreshAdminData}
           onBack={()=>setTabAdmin("dashboard")}/>;
+      if(tabAdmin==="reports")return<ReportsScreen ventas={ventas} inventario={inventario} onBack={()=>setTabAdmin("dashboard")}/>;
       if(tabAdmin==="drivers")return<EmptyState icon="🛵" title="Repartidores" sub="Módulo en construcción"/>;
       if(tabAdmin==="vendors")return<EmptyState icon="🏪" title="Vendedores" sub="Módulo en construcción"/>;
     }
